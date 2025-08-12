@@ -1,1 +1,1 @@
-# ai_cyberforensics
+# Forensic AI Toolkit (FAIT)
