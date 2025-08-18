@@ -32,6 +32,8 @@ matplotlib
 pandas
 ipywidgets
 ultralytics
+tensorflow
+
 
 #audio
 resemblyzer
