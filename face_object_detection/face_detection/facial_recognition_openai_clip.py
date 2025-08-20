@@ -6,7 +6,6 @@ This script matches faces in a gallery against a set of reference images using V
 
 '''
 Example usage:
-# ArcFace only
 python facial_recognition_openai_clip.py \
     --reference-dir ./path/to/reference_images --gallery-dir ./path/to/suspect_gallery --output-dir ./path/to/output_dir \
     --thresholds 0.8 0.9 1.0 --use-individual-refs --plot-results --use-cache
