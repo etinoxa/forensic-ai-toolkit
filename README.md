@@ -80,3 +80,14 @@ All commits must be signed off:
 
 ```bash
 git commit -s -m "Your commit message"
+```
+
+## 📦 Dataset
+
+The datasets used in this project are available externally due to size.  
+Please check [DATASETS.md](DATASETS.md) for download links and setup instructions.
+
+## 📂 Project Structure
+See [Project Structure](PROJECT_STRUCTURE.md) for details.
+
+
