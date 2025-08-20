@@ -22,6 +22,9 @@ torch
 sentence-transformers
 langchain
 langchain-community
+accelerate
+einops
+
 
 # Other dependencies
 numpy
@@ -32,6 +35,8 @@ matplotlib
 pandas
 ipywidgets
 ultralytics
+tensorflow
+
 
 #audio
 resemblyzer
