@@ -1,0 +1,9 @@
+from __future__ import annotations
+from typing import Optional, Protocol, List, Dict, Any
+import numpy as np
+
+# Embeddings (recognition vectors)
+class Embedder(Protocol):
+    def name(self) -> str: ...
+    def embed_image(self, image_path: str, use_cache: bool = True) -> Optional[np.ndarray]: ...
+    def mean_embedding(self, folder: str, use_cache: bool = True) -> np.ndarray: ...
