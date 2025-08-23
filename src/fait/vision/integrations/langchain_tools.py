@@ -11,7 +11,7 @@ class FaceMatchInput(BaseModel):
     model: Literal["arcface", "clip"]
     reference_dir: str
     gallery_dir: str
-    output_dir: str
+    output_dir: Optional[str] = None
     thresholds: List[float]
     metric: Literal["euclidean", "cosine"] = "euclidean"
     use_cache: bool = True

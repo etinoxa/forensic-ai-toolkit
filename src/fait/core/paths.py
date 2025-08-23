@@ -48,6 +48,12 @@ class FaitPaths:
 # singleton
 _paths: FaitPaths | None = None
 
+def _env_path(name: str, default: Path) -> Path:
+    v = os.getenv(name)
+    if v is None or v.strip() == "":
+        return default
+    return Path(v).expanduser().resolve()
+
 def get_paths() -> FaitPaths:
     global _paths
     if _paths is not None:
@@ -56,12 +62,12 @@ def get_paths() -> FaitPaths:
     home = _default_home()
 
     # environment overrides for subdirs (optional)
-    cache_dir = Path(os.getenv("FAIT_CACHE_DIR", home / "cache"))
-    models = Path(os.getenv("FAIT_MODELS_CACHE_DIR", cache_dir / "models"))
-    embeds = Path(os.getenv("FAIT_EMBEDDINGS_CACHE_DIR", cache_dir / "embeddings"))
-    outputs = Path(os.getenv("FAIT_OUTPUTS_DIR", home / "outputs"))
-    logs = Path(os.getenv("FAIT_LOGS_DIR", home / "logs"))
-    tmp = Path(os.getenv("FAIT_TMP_DIR", home / "tmp"))
+    cache_dir = _env_path("FAIT_CACHE_DIR", home / "cache")
+    models    = _env_path("FAIT_MODELS_CACHE_DIR", cache_dir / "models")
+    embeds    = _env_path("FAIT_EMBEDDINGS_CACHE_DIR", cache_dir / "embeddings")
+    outputs   = _env_path("FAIT_OUTPUTS_DIR", home / "outputs")
+    logs      = _env_path("FAIT_LOGS_DIR", home / "logs")
+    tmp       = _env_path("FAIT_TMP_DIR", home / "tmp")
 
     _paths = FaitPaths(
         home=home, cache=cache_dir, models_cache=models,

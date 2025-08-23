@@ -14,7 +14,7 @@ dist/
 *.egg-info/
 .eggs/
 ./fait
-
+.env
 # Unit test / coverage reports
 .coverage
 htmlcov/
