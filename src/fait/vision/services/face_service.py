@@ -4,12 +4,9 @@ from typing import List, Optional, Literal
 from dataclasses import dataclass
 from insightface.app import FaceAnalysis
 
-import logging
 from fait.core.utils import ensure_folder, is_image_file, l2_normalize
 from fait.core.paths import get_paths
-from fait.vision.detectors.base import Detection
-
-log = logging.getLogger("fait.vision.services.face_service")
+from fait.vision.recognizers.base import Detection
 
 SelectStrategy = Literal["first", "largest", "best"]
 
@@ -32,9 +29,6 @@ class FaceService:
         ctx_id = 0 if self.device == "cuda" else -1
         self.app = FaceAnalysis(name=cfg.model_name, root=cfg.cache_dir, providers=providers)
         self.app.prepare(ctx_id=ctx_id, det_size=(cfg.det_width, cfg.det_height))
-        log.info("face_service:init",
-                 extra={"model": cfg.model_name, "device": self.device, "det_size": (cfg.det_width, cfg.det_height),
-                        "cache_dir": cfg.cache_dir})
 
     # ---- detect ----
     def detect(self, image_path: str) -> List[Detection]:
@@ -43,7 +37,6 @@ class FaceService:
         if img is None: return []
         faces = self.app.get(img)
         out: List[Detection] = []
-        log.debug("face_service:detect", extra={"image": image_path, "faces": len(out)})
         for f in faces:
             x1, y1, x2, y2 = [int(v) for v in f.bbox]
             kps = [(float(px), float(py)) for (px, py) in getattr(f, "kps", [])] if getattr(f, "kps", None) is not None else None
