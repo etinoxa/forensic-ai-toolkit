@@ -2,11 +2,14 @@ from __future__ import annotations
 import os, numpy as np
 from typing import Optional
 
+import time, logging
 from fait.core.registry import register_embedder
 from fait.core.interfaces import Embedder
 from fait.core.utils import ensure_folder, is_image_file, cache_path, save_embedding, load_embedding, l2_normalize
 from fait.core.paths import get_paths
 from fait.vision.services.face_service import get_face_service, FaceService
+
+log = logging.getLogger("fait.vision.embeddings.arcface")
 
 @register_embedder("arcface")
 class ArcFaceEmbedder(Embedder):
@@ -19,6 +22,10 @@ class ArcFaceEmbedder(Embedder):
         ensure_folder(self.embed_cache_dir)
         self.fs = face_service or get_face_service()
 
+    def _cache_base(self, image_path: str) -> str:
+        # include model tag so different ArcFace variants don’t share cache files
+        return cache_path(self.embed_cache_dir, image_path, self._model_tag)
+
     def name(self) -> str:
         return f"ArcFace({self.fs.device})"
 
@@ -26,15 +33,24 @@ class ArcFaceEmbedder(Embedder):
         return cache_path(self.embed_cache_dir, image_path, "arcface")
 
     def embed_image(self, image_path: str, use_cache: bool = True) -> Optional[np.ndarray]:
-        if not is_image_file(image_path): return None
+        if not is_image_file(image_path):
+            return None
         base = self._cache_base(image_path)
         for ext in (".pkl", ".npy"):
             p = base + ext
             if use_cache and os.path.exists(p):
+                log.debug("embed:cache_hit", extra={"image": image_path, "cache": p})
                 return load_embedding(p)
+
+        t0 = time.time()
         emb = self.fs.embed(image_path, select="best")
-        if emb is None: return None
-        save_embedding(base, emb)  # writes .pkl default
+        dt = int((time.time() - t0) * 1000)
+        if emb is None:
+            log.debug("embed:none", extra={"image": image_path, "ms": dt})
+            return None
+
+        save_embedding(base, emb)  # .pkl by default
+        log.debug("embed:ok", extra={"image": image_path, "ms": dt, "cache": base + ".pkl"})
         return emb
 
     def mean_embedding(self, folder: str, use_cache: bool = True) -> np.ndarray:
