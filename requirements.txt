@@ -21,9 +21,13 @@ scikit-learn
 torch
 sentence-transformers
 langchain
+langchain-core
 langchain-community
+langchain-huggingface
 accelerate
 einops
+pydantic
+python-dotenv
 
 
 # Other dependencies

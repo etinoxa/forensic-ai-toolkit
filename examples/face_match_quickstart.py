@@ -21,8 +21,8 @@ log.info("face_match: starting", extra={"run_id": run_id, "component": "arcface"
 def main():
     # Define paths relative to the script location
     script_dir = pathlib.Path(__file__).resolve().parent
-    reference_dir = script_dir / "../datasets/images/face/reference_images"
-    gallery_dir = script_dir / "../datasets/images/face/gallery"
+    reference_dir = script_dir / "/datasets/images/face/reference_images"
+    gallery_dir = script_dir / "datasets/images/face/gallery"
 
 
     # Convert to absolute paths and check if they exist

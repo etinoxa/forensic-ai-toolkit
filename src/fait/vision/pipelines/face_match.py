@@ -32,9 +32,9 @@ def run_face_match(
     # stable context for all logs
     ctx = {
         "component": embedder.name(),
-        # "reference_dir": reference_dir,
-        # "gallery_dir": gallery_dir,
-        # "output_dir": output_dir,
+        "reference_dir": reference_dir,
+        "gallery_dir": gallery_dir,
+        "output_dir": output_dir,
         "thresholds": thresholds,
         "metric": metric,
     }
@@ -48,7 +48,16 @@ def run_face_match(
     plot_path = None
 
     try:
+        if output_dir is None:
+            base = get_paths().outputs / "face"
+            ensure_folder(base)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            tag = to_safe_filename(embedder.name())
+            output_dir = str(base / f"{tag}_{stamp}")
+
         ensure_folder(output_dir)
+        for t in thresholds:
+            ensure_folder(os.path.join(output_dir, f"threshold_{t}"))
 
         # compute reference
         ref = embedder.mean_embedding(reference_dir, use_cache=use_cache)
@@ -111,6 +120,7 @@ def run_face_match(
             "closest": sort_pairs(distances, higher_is_better=False)[:topk_preview],
             "report_path": report_path,
             "plot_path": plot_path,
+            "output_dir": output_dir,
         }
 
     except Exception:
