@@ -7,7 +7,7 @@ from insightface.app import FaceAnalysis
 import logging
 from fait.core.utils import ensure_folder, is_image_file, l2_normalize
 from fait.core.paths import get_paths
-from fait.vision.recognizers.base import Detection
+from fait.vision.detectors.base import Detection
 
 log = logging.getLogger("fait.vision.services.face_service")
 

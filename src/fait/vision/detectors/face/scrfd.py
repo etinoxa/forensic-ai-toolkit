@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List
-from fait.vision.recognizers.base import Recognizer, Detection
+from fait.vision.detectors.base import Recognizer, Detection
 from fait.vision.services.face_service import get_face_service, FaceService
 from fait.core.utils import is_image_file
 

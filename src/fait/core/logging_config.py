@@ -3,6 +3,9 @@ from __future__ import annotations
 import os, json, socket, logging, logging.config, datetime, re
 from pathlib import Path
 from dotenv import load_dotenv
+from fait.core.paths import get_paths
+from fait.core.utils import ensure_folder
+
 load_dotenv()
 
 # Try to use FAIT paths if available; otherwise default to .fait/logs
@@ -74,73 +77,110 @@ def _env_flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1","true","yes","y","on"}
 
 def get_logging_config() -> dict:
-    level = os.getenv("FAIT_LOG_LEVEL", "INFO").strip().upper()
-    json_console = _env_flag("FAIT_LOG_JSON_CONSOLE", "false")
-    max_bytes = int(os.getenv("FAIT_LOG_MAX_BYTES", str(20 * 1024 * 1024)))
-    backups   = int(os.getenv("FAIT_LOG_BACKUPS", "7"))
+    """
+    Single-file logging at <repo>/.fait/logs/fait.log.
+    Env:
+      FAIT_LOG_LEVEL=INFO|DEBUG|...
+      FAIT_LOG_JSON_CONSOLE=true|false
+      FAIT_LOGS_DIR=<abs or relative>   # optional; else <repo>/.fait/logs
+      FAIT_LOG_MAX_BYTES=52428800       # optional; 0 disables rotation
+      FAIT_LOG_BACKUPS=14               # optional; only used if rotation enabled
+    """
+    import os
+    from fait.core.paths import get_paths
+
+    paths = get_paths()
+    logs_dir = paths.logs
+
+    level = os.getenv("FAIT_LOG_LEVEL", "INFO").upper()
+    json_console = os.getenv("FAIT_LOG_JSON_CONSOLE", "false").lower() in {"1", "true", "yes", "on"}
+
+    # Rotation knobs
+    try:
+        max_bytes = int(os.getenv("FAIT_LOG_MAX_BYTES", "0"))
+    except ValueError:
+        max_bytes = 0
+    try:
+        backups = int(os.getenv("FAIT_LOG_BACKUPS", "7"))
+    except ValueError:
+        backups = 7
+
+    use_rotating = max_bytes > 0
+
+    # Prefer python-json-logger for structured JSON; fallback to text
+    try:
+        import pythonjsonlogger  # noqa: F401
+        json_cls = "pythonjsonlogger.jsonlogger.JsonFormatter"
+        json_fmt = "%(asctime)s %(levelname)s %(name)s %(message)s"
+    except Exception:
+        json_cls = None
+        json_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+    formatters = {
+        "console_text": {
+            "class": "logging.Formatter",
+            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            "datefmt": "%H:%M:%S",
+        },
+        "console_json": (
+            {"()": json_cls, "fmt": json_fmt}
+            if json_cls
+            else {"class": "logging.Formatter",
+                  "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                  "datefmt": "%H:%M:%S"}
+        ),
+        "json_file": (
+            {"()": json_cls, "fmt": json_fmt}
+            if json_cls
+            else {"class": "logging.Formatter",
+                  "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"}
+        ),
+    }
+
+    # Build the single file handler (rotating or plain)
+    file_handler = {
+        "level": level,
+        "formatter": "json_file",
+        "filename": str(logs_dir / "fait.log"),
+        "encoding": "utf-8",
+        "delay": True,  # create file on first write
+    }
+    if use_rotating:
+        file_handler["class"] = "logging.handlers.RotatingFileHandler"
+        file_handler["maxBytes"] = max_bytes
+        file_handler["backupCount"] = backups
+    else:
+        file_handler["class"] = "logging.FileHandler"
+
+    handlers = {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": level,
+            "formatter": "console_json" if json_console else "console_text",
+            "stream": "ext://sys.stdout",
+        },
+        "fait_file": file_handler,
+    }
 
     return {
         "version": 1,
         "disable_existing_loggers": False,
-        "formatters": {
-            "console": {"()": ConsoleFormatter},
-            "json": {"()": JsonFormatter},
-        },
-        "filters": {"redact": {"()": RedactFilter}},
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "level": level,                              # ✅ use variable
-                "formatter": "json" if json_console else "console",
-                "filters": ["redact"],
-                "stream": "ext://sys.stdout",
-            },
-            "app_file": {
-                "class": "logging.handlers.RotatingFileHandler",
-                "level": level,                              # ✅ use variable
-                "formatter": "json",
-                "filters": ["redact"],
-                "filename": str(LOG_DIR / "app.json"),
-                "maxBytes": max_bytes,
-                "backupCount": backups,
-                "encoding": "utf-8",
-            },
-            "errors_file": {
-                "class": "logging.handlers.RotatingFileHandler",
-                "level": "ERROR",                            # keep ERROR for this one
-                "formatter": "json",
-                "filename": str(LOG_DIR / "errors.json"),
-                "maxBytes": max_bytes,
-                "backupCount": backups,
-                "encoding": "utf-8",
-            },
-            "audit_file": {
-                "class": "logging.FileHandler",
-                "level": "INFO",
-                "formatter": "json",
-                "filename": str(LOG_DIR / "audit.jsonl"),
-                "encoding": "utf-8",
-            },
-            "metrics_file": {
-                "class": "logging.FileHandler",
-                "level": "INFO",
-                "formatter": "json",
-                "filename": str(LOG_DIR / "metrics.jsonl"),
-                "encoding": "utf-8",
-            },
+        "formatters": formatters,
+        "handlers": handlers,
+        "root": {
+            "level": level,
+            "handlers": ["console", "fait_file"],
         },
         "loggers": {
-            "fait":         {"level": level, "handlers": ["console","app_file","errors_file"], "propagate": False},
-            "fait.audit":   {"level": "INFO", "handlers": ["audit_file"],   "propagate": False},
-            "fait.metrics": {"level": "INFO", "handlers": ["metrics_file"], "propagate": False},
-            "urllib3": {"level": "WARNING"},
-            "transformers": {"level": "WARNING"},
-            "insightface": {"level": "WARNING"},
-            "onnxruntime": {"level": "WARNING"},
+            # project loggers propagate to root -> single file + console
+            "fait": {"level": level, "propagate": True},
+            "fait.audit": {"level": "INFO", "propagate": True},
+            "fait.metrics": {"level": "INFO", "propagate": True},
         },
-        "root": {"level": level, "handlers": ["console"]},   # ✅ use variable
     }
 
+
 def setup_logging() -> None:
-    """Call once at program start (e.g., CLI entrypoint)."""
-    logging.config.dictConfig(get_logging_config())
+    cfg = get_logging_config()
+    ensure_folder(get_paths().logs)
+    logging.config.dictConfig(cfg)
