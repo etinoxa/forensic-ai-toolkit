@@ -66,26 +66,14 @@ def get_paths() -> FaitPaths:
         return _paths_singleton
 
     home = _env_path("FAIT_HOME", _default_home()).resolve()
-    cache_dir = _env_path("FAIT_CACHE_DIR", home / "cache")
-    models = _env_path("FAIT_MODELS_CACHE_DIR", cache_dir / "models")
-    embeds = _env_path("FAIT_EMBEDDINGS_CACHE_DIR", cache_dir / "embeddings")
+    cache = _env_path("FAIT_CACHE_DIR", home / "cache")
+    models = _env_path("FAIT_MODELS_CACHE_DIR", cache / "models")
+    embeds = _env_path("FAIT_EMBEDDINGS_CACHE_DIR", cache / "embeddings")
     outputs = _env_path("FAIT_OUTPUTS_DIR", home / "outputs")
     logs = _env_path("FAIT_LOGS_DIR", home / "logs")
     tmp = _env_path("FAIT_TMP_DIR", home / "tmp")
 
-    # Ensure directories exist
-    for p in (home, cache_dir, models, embeds, outputs, logs, tmp):
-        p.mkdir(parents=True, exist_ok=True)
-
-    _paths_singleton = FaitPaths(
-        home=home,
-        cache=cache_dir,
-        models_cache=models,
-        embeddings_cache=embeds,
-        outputs=outputs,
-        logs=logs,
-        tmp=tmp,
-    )
+    _paths_singleton = FaitPaths(home, cache, models, embeds, outputs, logs, tmp)
     return _paths_singleton
 
 

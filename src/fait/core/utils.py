@@ -12,6 +12,9 @@ import numpy as np
 def ensure_folder(path: str | Path) -> None:
     Path(path).mkdir(parents=True, exist_ok=True)
 
+def ensure_parent_dir(path: str | Path) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
 def is_image_file(path: str | Path) -> bool:
     p = str(path).lower()
     return os.path.isfile(path) and p.endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"))
@@ -70,6 +73,18 @@ def sha256_file(path: str | Path, bufsize: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+def file_md5(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
+    """
+    Fast MD5 of a file in chunks (1 MiB default).
+    Returns the hex digest string. Safe for large files.
+    """
+    p = Path(path)
+    h = hashlib.md5()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 # ───────────────────────────── Embedding Cache ─────────────────────────────
 
 def cache_path(embed_cache_dir: str | Path, image_path: str | Path, key_suffix: str) -> str:
@@ -89,15 +104,20 @@ def save_embedding(path: str | Path, emb: np.ndarray) -> str:
     Save embedding; if `path` ends with .npy we use np.save, otherwise pickle (.pkl).
     Returns the actual written path (extension may be added).
     """
-    path = str(path)
-    root, ext = os.path.splitext(path)
-    if ext.lower() == ".npy":
-        np.save(path, emb.astype(np.float32, copy=False))
-        return path
-    out = root + ".pkl" if ext == "" else path
-    with open(out, "wb") as f:
+    p = Path(str(path))
+    if p.suffix.lower() == ".npy":
+        ensure_parent_dir(p)
+        np.save(p, emb.astype(np.float32, copy=False))
+        return str(p)
+
+    # default to .pkl if no extension
+    if p.suffix == "":
+        p = p.with_suffix(".pkl")
+
+    ensure_parent_dir(p)
+    with open(p, "wb") as f:
         pickle.dump(emb, f, protocol=pickle.HIGHEST_PROTOCOL)
-    return out
+    return str(p)
 
 def load_embedding(path: str | Path) -> np.ndarray:
     path = str(path)
@@ -284,7 +304,7 @@ __all__ = [
     "ensure_folder", "is_image_file", "is_video_file", "walk_files",
     "to_safe_filename", "write_jsonl",
     # Hashing / cache
-    "sha256_file", "cache_path", "save_embedding", "load_embedding",
+    "sha256_file", "cache_path", "save_embedding", "load_embedding", "file_md5",
     # Math / metrics
     "l2_normalize", "cosine_similarity", "compute_distance",
     "sort_pairs", "topk_pairs",
