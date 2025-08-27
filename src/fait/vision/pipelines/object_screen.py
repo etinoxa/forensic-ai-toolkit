@@ -61,7 +61,7 @@ class ScreenConfig:
     output_dir: Optional[str] = None
     save_crops: bool = False
 
-    verifier: Literal["none", "deformable_detr", "yolo"] = "deformable_detr"
+    verifier: Literal["none", "deformable_detr", "yolo", "auto"] = "deformable_detr"
     run_name: Optional[str] = None
     gdino: GDINOConfig = GDINOConfig()
     detr: DefDETRConfig = DefDETRConfig(class_whitelist=[
@@ -108,6 +108,25 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
     log_path = run_dir / "log.jsonl"
     log_file = open(log_path, "a", encoding="utf-8")
 
+    # --- pick verifier from env if provided ---
+    env_v = os.getenv("FAIT_OBJECT_VERIFIER", "").strip().lower()
+    if env_v in {"yolo", "deformable_detr", "none"}:
+        cfg.verifier = env_v
+    elif env_v:
+        logging.getLogger("fait.vision.pipelines.object_screen").warning(
+            "object_screen: invalid FAIT_OBJECT_VERIFIER=%r (using %s)",
+            env_v, cfg.verifier
+        )
+
+    # Resolve verifier: CLI > env > default
+    if cfg.verifier == "auto":
+        env_v = os.getenv("FAIT_OBJECT_VERIFIER", "").strip().lower()
+        if env_v in {"yolo", "deformable_detr", "none"}:
+            cfg.verifier = env_v
+        else:
+            cfg.verifier = "deformable_detr"  # fallback default
+
+
     # Models
     gd = GroundingDINO(cfg.gdino, cache_dir=str(paths.models_cache))
 
@@ -120,6 +139,8 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
         cd = None
     else:
         raise ValueError(f"Unknown verifier: {cfg.verifier}")
+
+    log.info("object_screen:verifier", extra={"verifier": cfg.verifier})
 
     gallery_files = [f for f in sorted(os.listdir(cfg.gallery_dir)) if is_image_file(os.path.join(cfg.gallery_dir, f))]
     log_path = run_dir / "log.jsonl"

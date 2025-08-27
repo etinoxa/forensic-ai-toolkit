@@ -20,6 +20,11 @@ def main():
     p.add_argument("--alpha", type=float, default=0.5, help="Fusion weight α for GDINO")
     p.add_argument("--gdino-box-thr", type=float, default=0.25)
     p.add_argument("--gdino-text-thr", type=float, default=0.25)
+    p.add_argument(
+        "--verifier",
+        choices=["yolo", "deformable_detr", "none"],
+        help="Closed-set verifier to use. Overrides FAIT_OBJECT_VERIFIER if set."
+    )
     args = p.parse_args()
 
     fcfg = dict(rule="and" if args.and_rule else "weighted", tau_star=args.tau, alpha=args.alpha)
@@ -28,7 +33,7 @@ def main():
         gallery_dir=args.gallery_dir,
         output_dir=args.output_dir,
         save_crops=args.save_crops,
-        verifier="none" if args.gdino_only else "deformable_detr",
+        verifier=args.verifier or "auto",
     )
     scfg.gdino.box_threshold = args.gdino_box_thr
     scfg.gdino.text_threshold = args.gdino_text_thr
