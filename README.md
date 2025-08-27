@@ -8,7 +8,7 @@ _Revolutionizing Criminal Investigations with Artificial Intelligence_
 ---
 
 ## 📌 Overview
-Forensics AI Toolkit (FAIT) transforms the speed, accuracy, and scalability of digital forensic investigations by combining **AI-powered analysis** with **human-validated insights**.
+Forensics AI Toolkit (FAIT) transforms the speed, accuracy, and scalability of digital forensic investigations by combining **AI-powered analysis** with **human-validated insights**.  **FAIT should be used in investigations to generate leads rather than as courtroom evidence.**
 
 ### Key Features
 - **AI-powered pattern recognition**
