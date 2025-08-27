@@ -59,13 +59,9 @@ def main() -> None:
 
     # --- Prompt pack (tune to your needs) ---
     PROMPTS = [
-        "handgun",
-        "knife",
-        "laptop",
-        "usb stick",
-        "micro sd",
-        "sim card",
-        "passport",
+        "gun","handgun","pistol","revolver","firearm",
+        "gun barrel","pistol grip",
+        "knife","kitchen knife","chef knife","blade","dagger"
     ]
 
     # --- Basic validation ---
@@ -92,13 +88,10 @@ def main() -> None:
         save_crops=True,      # store ROI crops for triage
     )
 
-    # choose mode: "none" (GDINO-only) or "deformable_detr" or "yolo"(default two-stage)
-    cfg.verifier = "yolo"  # ← set to "none" to use GDINO only
-
     # GroundingDINO (open-vocab) knobs
-    cfg.gdino.box_threshold = 0.25
-    cfg.gdino.text_threshold = 0.25
-    cfg.gdino.box_expand = 0.15     # 15% padding around proposals
+    cfg.gdino.box_threshold = 0.35
+    cfg.gdino.text_threshold = 0.45
+    cfg.gdino.box_expand = 0.20     # 15% padding around proposals
     cfg.gdino.nms_iou = 0.5
 
     # Deformable DETR (closed-set) knobs
@@ -111,7 +104,7 @@ def main() -> None:
     cfg.detr.nms_iou = 0.5
 
     # YoloV8 knobs
-    cfg.verifier = "yolo"
+    # cfg.verifier = "yolo"
     # Optionally, pick relevant COCO labels YOLO knows about:
     cfg.yolo.class_whitelist = ["knife", "laptop", "cell phone", "backpack", "handbag", "suitcase"]
     cfg.yolo.model_id = "yolov8n.pt"  # or "yolo11n.pt" if you have it
