@@ -7,6 +7,7 @@ open_clip_torch
 faiss-cpu
 torchvision
 onnxruntime
+ultralytics
 
 #OCR
 ipywidgets
@@ -21,9 +22,13 @@ scikit-learn
 torch
 sentence-transformers
 langchain
+langchain-core
 langchain-community
+langchain-huggingface
 accelerate
 einops
+pydantic
+python-dotenv
 
 
 # Other dependencies
