@@ -1,0 +1,13 @@
+# Which recognizer to use
+recognizer: arcface        # arcface | clip
+
+# Where (optional; relative to repo root or absolute)
+# reference_dir: datasets/images/face/reference_images
+# gallery_dir:   datasets/images/face/gallery
+
+# Metric & thresholds
+metric: auto               # euclidean | cosine | auto (arcface->euclidean, clip->cosine)
+thresholds: [0.80, 0.90]   # ArcFace euclidean: lower = stricter; CLIP cosine: higher = stricter
+
+# Visualization
+plot_results: true

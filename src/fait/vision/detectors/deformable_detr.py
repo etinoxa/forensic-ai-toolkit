@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple, Optional
 
 import torch
 from PIL import Image
-from transformers import AutoImageProcessor, DeformableDetrForObjectDetection
+from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
 log = logging.getLogger("fait.vision.detectors.deformabledetr")
 
@@ -51,8 +51,10 @@ class DeformableDETR:
     def __init__(self, cfg: DefDETRConfig = DefDETRConfig(), cache_dir: str | None = None):
         self.cfg = cfg
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Auto-resolve the right model class from model_id
         self.processor = AutoImageProcessor.from_pretrained(cfg.model_id, cache_dir=cache_dir)
-        self.model = DeformableDetrForObjectDetection.from_pretrained(cfg.model_id, cache_dir=cache_dir).to(self.device).eval()
+        self.model = AutoModelForObjectDetection.from_pretrained(cfg.model_id, cache_dir=cache_dir).to(
+            self.device).eval()
         # label map
         self.id2label = self.model.config.id2label
         self.label2id = {v: k for k, v in self.id2label.items()}

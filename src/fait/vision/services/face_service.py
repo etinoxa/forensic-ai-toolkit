@@ -15,8 +15,9 @@ SelectStrategy = Literal["first", "largest", "best"]
 
 @dataclass(frozen=True)
 class FaceServiceConfig:
+    paths = get_paths()
     model_name: str = "buffalo_l"
-    cache_dir: str = str(get_paths().models_cache)   # <— changed default
+    cache_dir: str = str(get_paths().models_face_match)   # <— changed default
     det_width: int = 640
     det_height: int = 640
 

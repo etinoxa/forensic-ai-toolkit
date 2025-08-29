@@ -68,7 +68,7 @@ def build_local_hf_chat(
     """
     # Resolve local LLM cache dir: .fait/models/llm
     paths = get_paths()
-    llm_dir = Path(paths.home) / "cache" / "models" / "llm"
+    llm_dir = Path(paths.models_cache) / "llm"
     ensure_folder(llm_dir)
 
     # Ensure HF also uses this directory

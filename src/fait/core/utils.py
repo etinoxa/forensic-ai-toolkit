@@ -1,8 +1,10 @@
 # src/fait/core/utils.py
 from __future__ import annotations
+from dataclasses import dataclass
 import os, re, io, json, hashlib, pickle
 from pathlib import Path
-from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any
+from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union
+import logging, json, time
 
 import numpy as np
 
@@ -59,6 +61,12 @@ def write_jsonl(path: str | Path, rows: Iterable[Dict[str, Any]]) -> None:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
+def append_jsonl(log_path: str | Path, obj: dict) -> None:
+    """Append a JSON object to a .jsonl file (no persistent handle kept)."""
+    p = Path(log_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(obj) + "\n")
 
 # ───────────────────────────── Hashing / Provenance ─────────────────────────────
 
@@ -296,6 +304,135 @@ def write_report(
 
     return path
 
+def write_object_report(
+    output_dir: Union[str, Path],
+    strategy: str,
+    device: str,
+    prompts: List[str],
+    models: Dict[str, str],
+    thresholds: Dict[str, float],
+    counts: Dict[str, int],
+    found_files: List[str],
+    filename: str = "report.txt",
+) -> str:
+    """Write a human-readable report for object screening and return the path."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / filename
+
+    with path.open("w", encoding="utf-8") as f:
+        f.write("=== OBJECT SCREEN REPORT ===\n")
+        f.write(f"Strategy      : {strategy}\n")
+        f.write(f"Device        : {device}\n")
+        f.write(f"Prompts       : {', '.join(prompts)}\n")
+
+        # models
+        for k, v in models.items():
+            f.write(f"Model[{k}]    : {v}\n")
+
+        # numeric thresholds
+        for k, v in thresholds.items():
+            f.write(f"{k:12}: {v}\n")
+
+        f.write("\n")
+        f.write(f"Processed     : {counts.get('processed', 0)}\n")
+        f.write(f"Found images  : {counts.get('found', 0)}\n")
+        f.write(f"Review queue  : {counts.get('review', 0)}\n")
+
+        f.write("\nFound files:\n")
+        if found_files:
+            for nm in found_files:
+                f.write(f"  - {nm}\n")
+        else:
+            f.write("  (none)\n")
+
+    return str(path.resolve())
+
+# ───────────────────────────── Progress Status ─────────────────────────────
+
+@dataclass
+class ProgressMeter:
+    """
+    Unifies progress logging for both face_match and object_screen.
+    Prints a compact JSON payload in the message (easy to read/grep)
+    and optionally writes a structured line to a JSONL log file.
+
+    Example console line:
+      object_screen:progress {"processed":20,"total":30,"found":4,"review":0,"imgs_per_s":1.18,"eta_s":8}
+    """
+    total: int
+    label: str                        # e.g. "object_screen:progress" or "face_match:progress"
+    logger: logging.Logger
+    log_path: Optional[str | Path] = None
+    emit_every_n: int = 5
+    emit_every_sec: float = 2.0
+
+    # internal state
+    processed: int = 0
+    found: int = 0
+    review: int = 0
+    _t0: float = 0.0
+    _last_emit: float = 0.0
+
+    def __post_init__(self) -> None:
+        self._t0 = time.time()
+        self._last_emit = 0.0
+        # Emit an initial 0% line to show we're alive
+        self._emit(force=True)
+
+    def step(self, processed_inc: int = 1, found_inc: int = 0, review_inc: int = 0) -> None:
+        """Increment counters and emit if thresholds are met."""
+        self.processed += processed_inc
+        if found_inc:
+            self.found += found_inc
+        if review_inc:
+            self.review += review_inc
+        self._maybe_emit()
+
+    def set_counts(self, processed: int, found: Optional[int] = None, review: Optional[int] = None) -> None:
+        """Directly set counters (if you manage them externally)."""
+        self.processed = processed
+        if found is not None:
+            self.found = found
+        if review is not None:
+            self.review = review
+        self._maybe_emit()
+
+    def close(self) -> None:
+        """Emit a final line."""
+        self._emit(force=True)
+
+    # --- internals ---
+    def _maybe_emit(self) -> None:
+        now = time.time()
+        if (
+            self.processed in (1, self.total) or
+            (self.emit_every_n > 0 and self.processed % self.emit_every_n == 0) or
+            (now - self._last_emit) >= self.emit_every_sec
+        ):
+            self._emit()
+            self._last_emit = now
+
+    def _emit(self, force: bool = False) -> None:
+        elapsed = max(time.time() - self._t0, 1e-9)
+        ips = self.processed / elapsed
+        eta_s = int((self.total - self.processed) / ips) if ips > 1e-9 else None
+        payload = {
+            "processed": self.processed,
+            "total": self.total,
+            "found": self.found,
+            "review": self.review,
+            "imgs_per_s": round(ips, 2),
+            "eta_s": eta_s,
+        }
+        # 1) Console (human friendly)
+        # We embed compact JSON in the message so it shows cleanly regardless of formatter.
+        self.logger.info("%s %s", self.label, json.dumps(payload, separators=(",", ":")))
+        # 2) JSONL (machine friendly), if a path was provided
+        if self.log_path:
+            append_jsonl(self.log_path, {"event": "progress", **payload})
+
+
 
 # ───────────────────────────── Exports ─────────────────────────────
 
@@ -309,5 +446,7 @@ __all__ = [
     "l2_normalize", "cosine_similarity", "compute_distance",
     "sort_pairs", "topk_pairs",
     # Plotting & reporting
-    "plot_scores", "plot_distances", "plot_similarities", "write_report",
+    "plot_scores", "plot_distances", "plot_similarities", "write_report", "write_object_report",
+    # Progress status
+    "ProgressMeter",
 ]

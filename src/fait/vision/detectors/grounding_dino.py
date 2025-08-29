@@ -1,117 +1,224 @@
+# src/fait/vision/detectors/grounding_dino.py
 from __future__ import annotations
-import logging
+
 from dataclasses import dataclass
-from typing import List, Dict, Tuple
+from typing import List, Dict, Optional, Iterable, Set
+from pathlib import Path
+import logging
 
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+import torchvision.ops as tvops
 
-log = logging.getLogger("fait.vision.detectors.groundingdino")
+
+log = logging.getLogger("fait.vision.detectors.gdino")
+
 
 @dataclass
 class GDINOConfig:
+    """
+    Configuration for GroundingDINO detector.
+    """
+    # Stronger than tiny; matches typical notebook defaults that perform better on web images
     model_id: str = "IDEA-Research/grounding-dino-base"
-    box_threshold: float = 0.25
-    text_threshold: float = 0.25
-    nms_iou: float = 0.5
-    box_expand: float = 0.15  # 15% padding around proposals
 
-def _nms(boxes_xyxy: torch.Tensor, scores: torch.Tensor, iou_thresh: float) -> List[int]:
-    # boxes: [N, 4] (x1,y1,x2,y2)
-    if boxes_xyxy.numel() == 0:
-        return []
-    idxs = torch.ops.torchvision.nms(boxes_xyxy, scores, iou_thresh) if hasattr(torch.ops, "torchvision") else \
-           _slow_nms(boxes_xyxy, scores, iou_thresh)
-    return idxs.cpu().tolist()
+    # Proposal thresholds used inside HF post-process
+    box_threshold: float = 0.20
+    text_threshold: float = 0.20
 
-def _slow_nms(boxes: torch.Tensor, scores: torch.Tensor, iou_thresh: float) -> torch.Tensor:
-    # Minimal PyTorch-only NMS (fallback)
-    keep = []
-    order = scores.argsort(descending=True)
-    while order.numel() > 0:
-        i = order[0].item()
-        keep.append(i)
-        if order.numel() == 1:
-            break
-        ious = _iou_pairwise(boxes[i].unsqueeze(0), boxes[order[1:]])[0]
-        mask = ious <= iou_thresh
-        order = order[1:][mask]
-    return torch.tensor(keep, device=boxes.device)
+    # Additional processing
+    nms_iou: float = 0.50
+    box_expand: float = 0.20         # final padding ratio on proposals (0.0 disables)
+    long_side: int = 1024            # upsample small images (0 disables upsample)
 
-def _iou_pairwise(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    # a: [Na,4], b: [Nb,4] both xyxy
-    inter_x1 = torch.maximum(a[..., 0], b[..., 0])
-    inter_y1 = torch.maximum(a[..., 1], b[..., 1])
-    inter_x2 = torch.minimum(a[..., 2], b[..., 2])
-    inter_y2 = torch.minimum(a[..., 3], b[..., 3])
-    inter = (inter_x2 - inter_x1).clamp(min=0) * (inter_y2 - inter_y1).clamp(min=0)
-    area_a = (a[..., 2] - a[..., 0]).clamp(min=0) * (a[..., 3] - a[..., 1]).clamp(min=0)
-    area_b = (b[..., 2] - b[..., 0]).clamp(min=0) * (b[..., 3] - b[..., 1]).clamp(min=0)
-    union = area_a + area_b - inter + 1e-6
-    return inter / union
+    # Prompt handling
+    normalize_prompts: bool = True   # lowercase + trailing period
+    add_relational_prompts: bool = True  # add "person with X", "person holding X", "a photo of X"
 
-def _expand_xyxy(box: torch.Tensor, w: int, h: int, pct: float) -> torch.Tensor:
-    x1, y1, x2, y2 = box
-    cx = (x1 + x2) / 2
-    cy = (y1 + y2) / 2
-    bw = (x2 - x1) * (1 + pct)
-    bh = (y2 - y1) * (1 + pct)
-    x1n = (cx - bw / 2).clamp(min=0, max=w - 1)
-    y1n = (cy - bh / 2).clamp(min=0, max=h - 1)
-    x2n = (cx + bw / 2).clamp(min=0, max=w - 1)
-    y2n = (cy + bh / 2).clamp(min=0, max=h - 1)
-    return torch.tensor([x1n, y1n, x2n, y2n], device=box.device)
 
 class GroundingDINO:
-    """Open-vocabulary proposals from prompts."""
-    def __init__(self, cfg: GDINOConfig = GDINOConfig(), cache_dir: str | None = None):
+    """
+    GroundingDINO wrapper that returns open-vocabulary proposals as:
+        [{'box':[x1,y1,x2,y2], 'score': float, 'prompt': str}, ...]
+    """
+
+    def __init__(self, cfg: GDINOConfig = GDINOConfig(), cache_dir: Optional[str] = None):
+        from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
         self.cfg = cfg
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.processor = AutoProcessor.from_pretrained(cfg.model_id, cache_dir=cache_dir)
-        self.model = AutoModelForZeroShotObjectDetection.from_pretrained(cfg.model_id, cache_dir=cache_dir).to(self.device).eval()
-        log.info("groundingdino:init", extra={"model": cfg.model_id, "device": self.device})
 
-    @torch.inference_mode()
-    def propose(self, image: Image.Image, prompts: List[str]) -> List[Dict]:
-        # Returns list of dicts: {box:[x1,y1,x2,y2], score: float, prompt: str}
-        inputs = self.processor(images=image, text=prompts, return_tensors="pt").to(self.device)
-        out = self.model(**inputs)
-        # HF helper: convert to xyxy on CPU
-        target_sizes = torch.tensor([image.size[::-1]])  # (h,w)
-        kwargs = dict(
-            box_threshold=self.cfg.box_threshold,
-            text_threshold=self.cfg.text_threshold,
-            target_sizes=torch.tensor([image.size[::-1]]),  # (h, w)
+        self.processor = AutoProcessor.from_pretrained(cfg.model_id, cache_dir=cache_dir)
+        self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            cfg.model_id, cache_dir=cache_dir
+        ).to(self.device).eval()
+
+        log.info(
+            "gdino:init",
+            extra={"model": cfg.model_id, "device": self.device},
         )
+
+    # --------------------------------------------------------------------- #
+    # Helpers
+    # --------------------------------------------------------------------- #
+    def _norm_prompt(self, p: str) -> str:
+        p = p.strip().lower()
+        if not p.endswith("."):
+            p += "."
+        return p
+
+    def _enrich_prompts(self, prompts: Iterable[str]) -> List[str]:
+        """
+        Normalize and add relational variants:
+          - base
+          - "person with {base}"
+          - "person holding {base}"
+          - "a photo of {base}"
+        """
+        if not self.cfg.normalize_prompts and not self.cfg.add_relational_prompts:
+            # keep original list as-is
+            return [p for p in prompts]
+
+        out: Set[str] = set()
+        ordered: List[str] = []
+
+        def _push(s: str):
+            if s not in out:
+                out.add(s)
+                ordered.append(s)
+
+        for base in prompts:
+            b = self._norm_prompt(base) if self.cfg.normalize_prompts else str(base).strip()
+            if b:
+                _push(b)
+            if self.cfg.add_relational_prompts:
+                _push(self._norm_prompt(f"person with {base}"))
+                _push(self._norm_prompt(f"person holding {base}"))
+                _push(self._norm_prompt(f"a photo of {base}"))
+        return ordered
+
+    def _maybe_resize(self, img: Image.Image) -> Image.Image:
+        if not self.cfg.long_side:
+            return img
+        w, h = img.size
+        longer = max(w, h)
+        if longer >= self.cfg.long_side:
+            return img
+        if w >= h:
+            nw, nh = self.cfg.long_side, int(self.cfg.long_side * h / w)
+        else:
+            nw, nh = int(self.cfg.long_side * w / h), self.cfg.long_side
+        return img.resize((nw, nh), Image.BICUBIC)
+
+    def _expand_xyxy(self, box, W, H, ratio) -> List[float]:
+        x1, y1, x2, y2 = box
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+        w = (x2 - x1)
+        h = (y2 - y1)
+        w *= (1.0 + ratio)
+        h *= (1.0 + ratio)
+        nx1 = max(0.0, cx - 0.5 * w)
+        ny1 = max(0.0, cy - 0.5 * h)
+        nx2 = min(float(W), cx + 0.5 * w)
+        ny2 = min(float(H), cy + 0.5 * h)
+        return [nx1, ny1, nx2, ny2]
+
+    @staticmethod
+    def _to_device(batch):
+        """Move a transformers BatchFeature or dict of tensors to current device (robustly)."""
         try:
-            # Newer transformers: pass input_ids positionally
-            results = self.processor.post_process_grounded_object_detection(
-                out, inputs["input_ids"], **kwargs
+            return batch.to  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return None
+
+    # --------------------------------------------------------------------- #
+    # API
+    # --------------------------------------------------------------------- #
+    @torch.inference_mode()
+    def propose(self, img: Image.Image, prompts: List[str]) -> List[Dict]:
+        """
+        Return proposals:
+          [{'box':[x1,y1,x2,y2], 'score': float, 'prompt': str}, ...]
+        """
+        # 1) Normalize/enrich prompts and build a single caption "p1 . p2 . p3 ."
+        phrases = self._enrich_prompts(prompts)
+        phrases = [self._norm_prompt(p) for p in phrases if isinstance(p, str) and p.strip()]
+        # dedupe while keeping order
+        seen: Set[str] = set()
+        phrases = [p for p in phrases if not (p in seen or seen.add(p))]
+        if not phrases:
+            return []
+
+        caption = " ".join(phrases)  # each already ends with "."
+
+        # 2) Optional upsample to help on small/web images
+        original = img
+        img = self._maybe_resize(img)
+
+        # 3) Tokenize (pad/truncate) and forward
+        inputs = self.processor(
+            images=img,
+            text=caption,           # single caption string (dot-separated phrases)
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        )
+        # Move to device (BatchFeature may or may not support .to())
+        try:
+            inputs = inputs.to(self.device)  # type: ignore[attr-defined]
+        except Exception:
+            inputs = {k: (v.to(self.device) if hasattr(v, "to") else v) for k, v in inputs.items()}
+
+        outputs = self.model(**inputs)
+
+        # 4) Post-process with correct target sizes (H, W)
+        H, W = img.size[1], img.size[0]
+        target_sizes = torch.tensor([[H, W]], device=self.device)
+        try:
+            processed = self.processor.post_process_grounded_object_detection(
+                outputs, inputs["input_ids"],
+                box_threshold=self.cfg.box_threshold,
+                text_threshold=self.cfg.text_threshold,
+                target_sizes=target_sizes
             )[0]
         except TypeError:
-            # Older signatures may require explicit kw
-            results = self.processor.post_process_grounded_object_detection(
-                outputs=out, input_ids=inputs["input_ids"], **kwargs
+            # older transformers signature
+            processed = self.processor.post_process_grounded_object_detection(
+                outputs=outputs, input_ids=inputs["input_ids"],
+                box_threshold=self.cfg.box_threshold,
+                text_threshold=self.cfg.text_threshold,
+                target_sizes=target_sizes
             )[0]
-        boxes = results["boxes"]  # [N,4] xyxy
-        scores = results["scores"]  # [N]
-        phrases = results["labels"]  # ["handgun", ...]
+
+        boxes = processed["boxes"].detach().cpu()    # Tensor [N, 4] xyxy in resized image space
+        scores = processed["scores"].detach().cpu()  # Tensor [N]
+        labels = processed["labels"]                 # List[str] aligned to phrases
 
         if boxes.numel() == 0:
             return []
 
-        # NMS
-        keep = _nms(boxes, scores, self.cfg.nms_iou)
+        # 5) Single NMS pass
+        keep = tvops.nms(boxes, scores, self.cfg.nms_iou)
         boxes = boxes[keep]
         scores = scores[keep]
-        phrases = [phrases[i] for i in keep]
+        labels = [labels[i] for i in keep.tolist()]
 
-        # expand boxes
-        W, H = image.size
-        expanded = torch.stack([_expand_xyxy(b, W, H, self.cfg.box_expand) for b in boxes])
+        # 6) Scale boxes back to original size if we upsampled
+        if original.size != img.size:
+            sx = original.size[0] / img.size[0]
+            sy = original.size[1] / img.size[1]
+            boxes = boxes * torch.tensor([sx, sy, sx, sy])
 
-        return [
-            {"box": expanded[i].cpu().tolist(), "score": float(scores[i].cpu()), "prompt": phrases[i]}
-            for i in range(len(phrases))
-        ]
+        # 7) Optional box expansion (padding)
+        W0, H0 = original.size
+        proposals: List[Dict] = []
+        for b, s, lab in zip(boxes.tolist(), scores.tolist(), labels):
+            out_box = self._expand_xyxy(b, W0, H0, self.cfg.box_expand) if self.cfg.box_expand > 0 else b
+            proposals.append({
+                "box": [float(x) for x in out_box],
+                "score": float(s),
+                "prompt": str(lab),
+            })
+
+        return proposals

@@ -1,12 +1,17 @@
 # src/fait/vision/detectors/yolo.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 import logging
 
 import torch
 from PIL import Image
+
+from huggingface_hub import hf_hub_download
+from ultralytics import YOLO
+
+from fait.core.paths import get_paths, ensure_on_first_write
 
 log = logging.getLogger("fait.vision.detectors.yolo")
 
@@ -19,71 +24,93 @@ class YoloConfig:
     imgsz: int = 640
     class_whitelist: Optional[List[str]] = None  # e.g., ["knife","laptop","cell phone"]
 
+def _resolve_yolo_weights(model_id: str, cache_dir: Path) -> Path:
+    p = Path(model_id)
+    if p.exists():
+        return p.resolve()
+    ensure_on_first_write(cache_dir)
+
+    candidates = []
+    if "/" in model_id and model_id.endswith(".pt"):
+        repo_id, filename = model_id.rsplit("/", 1)
+        candidates.append((repo_id, filename))
+    else:
+        fname = Path(model_id).name
+        candidates.extend([
+            ("ultralytics/assets", fname),
+            ("ultralytics/yolov8", fname),
+        ])
+
+    for repo_id, filename in candidates:
+        try:
+            local = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=str(cache_dir),
+                local_dir_use_symlinks=False,
+            )
+            return Path(local).resolve()
+        except Exception:
+            continue
+
+    fallback = cache_dir / Path(model_id).name
+    if fallback.exists():
+        return fallback.resolve()
+    raise FileNotFoundError(
+        f"Could not resolve YOLO weights '{model_id}'. Place the file at: {fallback}"
+    )
+
 class YOLODetector:
-    """Closed-set detector wrapper for Ultralytics YOLO (v8/v11)."""
-
-    def __init__(self, cfg: YoloConfig = YoloConfig(), cache_dir: str | None = None):
-        from ultralytics import YOLO
+    def __init__(self, cfg: YoloConfig, cache_dir: Optional[str] = None):
         self.cfg = cfg
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        paths = get_paths()
+        cache = Path(cache_dir) if cache_dir else paths.models_object_screen
+        ensure_on_first_write(cache)
 
-        # Try to steer Ultralytics to our cache/outputs (best-effort)
-        if cache_dir:
-            try:
-                from ultralytics.utils import settings as ysettings
-                cache = Path(cache_dir)
-                ysettings.update({
-                    "weights_dir": str(cache / "yolo"),
-                    "runs_dir": str(cache.parent / "yolo_runs"),
-                })
-            except Exception:
-                pass
+        weights_path = _resolve_yolo_weights(cfg.model_id, cache)
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-        self.model = YOLO(cfg.model_id)
+        self.model = YOLO(str(weights_path))
         try:
             self.model.to(self.device)
         except Exception:
             pass
 
-        # name map (COCO etc.)
-        self.names = getattr(self.model, "names", None)
-        if not self.names:
-            self.names = {i: str(i) for i in range(1000)}
-
         log.info("yolo:init", extra={
-            "model": cfg.model_id, "device": self.device,
-            "score_thr": cfg.score_threshold, "iou": cfg.nms_iou, "imgsz": cfg.imgsz
+            "weights": str(weights_path),
+            "cache_dir": str(cache),
+            "imgsz": cfg.imgsz,
+            "score_threshold": cfg.score_threshold,
+            "nms_iou": cfg.nms_iou,
+            "device": self.device,
         })
 
     @torch.inference_mode()
-    def detect(self, image: Image.Image) -> List[Dict]:
-        # Ultralytics accepts PIL.Image directly
+    def detect(self, image) -> List[Dict[str, Any]]:
+        """
+        Accepts PIL.Image, numpy array, or file path. Returns a list of dicts:
+        {"label": str, "score": float, "box": [x1,y1,x2,y2]} in absolute pixels.
+        """
         results = self.model.predict(
-            image,
+            source=image,
             imgsz=self.cfg.imgsz,
             conf=self.cfg.score_threshold,
             iou=self.cfg.nms_iou,
             device=self.device,
-            verbose=False
+            verbose=False,
         )
         r = results[0]
-        boxes = r.boxes
+        names = getattr(self.model, "names", None) or getattr(r, "names", {})
 
-        out: List[Dict] = []
-        if boxes is None or len(boxes) == 0:
-            return out
+        out: List[Dict[str, Any]] = []
+        for b in r.boxes:
+            conf = float(b.conf.item())
+            cls_id = int(b.cls.item())
+            label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
 
-        xyxy = boxes.xyxy.cpu().numpy()
-        conf = boxes.conf.cpu().numpy()
-        cls  = boxes.cls.cpu().numpy().astype(int)
-
-        for b, c, k in zip(xyxy, conf, cls):
-            label = self.names.get(int(k), str(int(k)))
             if self.cfg.class_whitelist and label not in self.cfg.class_whitelist:
                 continue
-            out.append({
-                "box": [float(b[0]), float(b[1]), float(b[2]), float(b[3])],
-                "score": float(c),
-                "label": label,
-            })
+
+            x1, y1, x2, y2 = [float(v) for v in b.xyxy[0].tolist()]
+            out.append({"label": label, "score": conf, "box": [x1, y1, x2, y2]})
         return out
