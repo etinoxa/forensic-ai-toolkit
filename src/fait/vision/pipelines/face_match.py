@@ -6,7 +6,7 @@ from typing import List, Dict, Tuple
 import logging
 from fait.core.interfaces import Embedder
 from fait.core.paths import get_paths
-from fait.core.utils import ensure_folder, is_image_file, compute_distance, write_report, plot_distances, sort_pairs, to_safe_filename
+from fait.core.utils import ProgressMeter, ensure_folder, is_image_file, compute_distance, write_report, plot_distances, sort_pairs, to_safe_filename
 
 log = logging.getLogger("fait.vision.pipelines.face_match")
 
@@ -62,6 +62,25 @@ def run_face_match(
         # compute reference
         ref = embedder.mean_embedding(reference_dir, use_cache=use_cache)
 
+        total = len(gallery_dir)
+        pm = ProgressMeter(
+            total=total,
+            label="face_match:progress",
+            logger=log,
+            log_path=None,  # if you also keep a JSONL; else None
+        )
+
+        thresholds = [float(t) for t in thresholds]
+        thresholds.sort()  # ascending: strictest is thresholds[0]
+        counts = {t: 0 for t in thresholds}
+
+        # create threshold dirs once
+        for t in thresholds:
+            ensure_folder(os.path.join(output_dir, f"threshold_{t}"))
+
+        processed = 0
+        distances = []
+
         # iterate gallery
         files = [f for f in os.listdir(gallery_dir) if is_image_file(os.path.join(gallery_dir, f))]
         for fname in files:
@@ -69,15 +88,21 @@ def run_face_match(
             emb = embedder.embed_image(fp, use_cache=use_cache)
             if emb is None:
                 continue
+
             d = compute_distance(ref, emb, metric)
             distances.append((fname, float(d)))
             processed += 1
+
+            # copy into each threshold bucket it meets
             for t in thresholds:
-                ensure_folder(os.path.join(output_dir, f"threshold_{t}"))
                 if d <= t:
-                    ensure_folder(os.path.join(output_dir, f"threshold_{t}"))
                     shutil.copy(fp, os.path.join(output_dir, f"threshold_{t}", fname))
                     counts[t] += 1
+
+            # progress: “found” = strictest threshold count (unique-enough signal)
+            pm.set_counts(processed, found=counts[thresholds[0]], review=0)
+
+        pm.close()
 
         # artifacts
         report_path = write_report(

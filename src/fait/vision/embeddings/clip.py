@@ -8,7 +8,7 @@ import time, logging
 from fait.core.registry import register_embedder
 from fait.core.interfaces import Embedder
 from fait.core.utils import ensure_folder, is_image_file, cache_path, save_embedding, load_embedding, l2_normalize
-from fait.core.paths import get_paths
+from fait.core.paths import get_paths, ensure_on_first_write
 
 log = logging.getLogger("fait.vision.embeddings.clip")
 
@@ -22,10 +22,11 @@ class CLIPEmbedder(Embedder):
                  embed_cache_dir: str | None = None):
         paths = get_paths()
         self.model_id = model_id
-        self.cache_dir = cache_dir or str(paths.models_cache)
-        self.embed_cache_dir = embed_cache_dir or str(paths.embeddings_cache)
+        self.cache_dir = paths.models_face_match
+        self.embed_cache_dir = embed_cache_dir or str(paths.embedding_cache)
         ensure_folder(self.cache_dir);
         ensure_folder(self.embed_cache_dir)
+        ensure_on_first_write(self.cache_dir)
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.processor = CLIPProcessor.from_pretrained(model_id, cache_dir=self.cache_dir)

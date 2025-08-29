@@ -41,40 +41,38 @@ def _env_path(name: str, default: Path) -> Path:
 
 @dataclass(frozen=True)
 class FaitPaths:
-    home: Path
-    cache: Path
+    repo_root: Path
+    fait_root: Path
+    cache_root: Path
     models_cache: Path
-    embeddings_cache: Path
-    outputs: Path
+    models_face_match: Path
+    models_object_screen: Path
+    models_llm: Path
     logs: Path
-    tmp: Path
+    outputs: Path
+    embedding_cache: Path
 
 
 _paths_singleton: FaitPaths | None = None
 
 
 def get_paths() -> FaitPaths:
-    """
-    Central place to resolve FAIT directories.
-    Honors (if set and non-blank):
-      FAIT_HOME, FAIT_CACHE_DIR, FAIT_MODELS_CACHE_DIR,
-      FAIT_EMBEDDINGS_CACHE_DIR, FAIT_OUTPUTS_DIR,
-      FAIT_LOGS_DIR, FAIT_TMP_DIR
-    """
-    global _paths_singleton
-    if _paths_singleton is not None:
-        return _paths_singleton
-
-    home = _env_path("FAIT_HOME", _default_home()).resolve()
-    cache = _env_path("FAIT_CACHE_DIR", home / "cache")
-    models = _env_path("FAIT_MODELS_CACHE_DIR", cache / "models")
-    embeds = _env_path("FAIT_EMBEDDINGS_CACHE_DIR", cache / "embeddings")
-    outputs = _env_path("FAIT_OUTPUTS_DIR", home / "outputs")
-    logs = _env_path("FAIT_LOGS_DIR", home / "logs")
-    tmp = _env_path("FAIT_TMP_DIR", home / "tmp")
-
-    _paths_singleton = FaitPaths(home, cache, models, embeds, outputs, logs, tmp)
-    return _paths_singleton
+    root = _repo_root()
+    fait_root = root / ".fait"
+    cache_root = fait_root / "cache"
+    models_cache = cache_root / "models"
+    return FaitPaths(
+        repo_root=root,
+        fait_root=fait_root,
+        cache_root=cache_root,
+        models_cache=models_cache,
+        models_face_match=models_cache / "face_match",
+        models_object_screen=models_cache / "object_screen",
+        models_llm=models_cache / "llm",
+        logs=Path(os.getenv("FAIT_LOGS_DIR", str(fait_root / "logs"))),
+        outputs=Path(os.getenv("FAIT_OUTPUTS_DIR", str(fait_root / "outputs"))),
+        embedding_cache=Path(os.getenv("FAIT_EMBEDDING_CACHE", str(cache_root / "embedding_cache"))),
+    )
 
 
 def reset_paths_for_tests() -> None:
@@ -84,3 +82,7 @@ def reset_paths_for_tests() -> None:
     """
     global _paths_singleton
     _paths_singleton = None
+
+def ensure_on_first_write(p: Path) -> None:
+    # call this only when you’re about to write; no-op otherwise
+    p.mkdir(parents=True, exist_ok=True)
