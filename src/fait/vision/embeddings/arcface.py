@@ -18,7 +18,7 @@ class ArcFaceEmbedder(Embedder):
     """
     def __init__(self, embed_cache_dir: str | None = None, face_service: Optional[FaceService] = None):
         paths = get_paths()
-        self.embed_cache_dir = embed_cache_dir or str(paths.embedding_cache)
+        self.embed_cache_dir = embed_cache_dir or str(paths.embeddings_cache)
         ensure_folder(self.embed_cache_dir)
         self.fs = face_service or get_face_service()
 

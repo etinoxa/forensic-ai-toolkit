@@ -1,15 +1,20 @@
 # src/fait/vision/detectors/yolo.py
 from __future__ import annotations
+import logging
+import numpy as np
+import torch
+
+
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
+from typing import Union
 from pathlib import Path
-import logging
-
-import torch
 from PIL import Image
+
 
 from huggingface_hub import hf_hub_download
 from ultralytics import YOLO
+from .base import Detection
 
 from fait.core.paths import get_paths, ensure_on_first_write
 
@@ -60,6 +65,16 @@ def _resolve_yolo_weights(model_id: str, cache_dir: Path) -> Path:
         f"Could not resolve YOLO weights '{model_id}'. Place the file at: {fallback}"
     )
 
+def _to_source(img_or_path: Union[str, Path, Image.Image, np.ndarray]):
+    """Return a source YOLO can consume (path or numpy RGB array)."""
+    if isinstance(img_or_path, (str, Path)):
+        return str(img_or_path)
+    if isinstance(img_or_path, Image.Image):
+        return np.asarray(img_or_path.convert("RGB"))
+    if isinstance(img_or_path, np.ndarray):
+        return img_or_path  # assume HWC RGB
+    raise TypeError(f"Unsupported image type: {type(img_or_path)}")
+
 class YOLODetector:
     def __init__(self, cfg: YoloConfig, cache_dir: Optional[str] = None):
         self.cfg = cfg
@@ -86,31 +101,39 @@ class YOLODetector:
         })
 
     @torch.inference_mode()
-    def detect(self, image) -> List[Dict[str, Any]]:
-        """
-        Accepts PIL.Image, numpy array, or file path. Returns a list of dicts:
-        {"label": str, "score": float, "box": [x1,y1,x2,y2]} in absolute pixels.
-        """
+    def detect(self, image_or_path: Union[str, Path, Image.Image, np.ndarray]):
+        source = _to_source(image_or_path)
         results = self.model.predict(
-            source=image,
-            imgsz=self.cfg.imgsz,
+            source=source,
             conf=self.cfg.score_threshold,
             iou=self.cfg.nms_iou,
+            imgsz=self.cfg.imgsz,
             device=self.device,
             verbose=False,
         )
-        r = results[0]
-        names = getattr(self.model, "names", None) or getattr(r, "names", {})
 
-        out: List[Dict[str, Any]] = []
-        for b in r.boxes:
-            conf = float(b.conf.item())
-            cls_id = int(b.cls.item())
-            label = names.get(cls_id, str(cls_id)) if isinstance(names, dict) else str(cls_id)
+        dets: list[Detection] = []
+        names = getattr(self.model, "names", {}) or {}
+        for res in results:
+            boxes = res.boxes
+            # compat: support either a Boxes object or a list of per-box objects
+            if isinstance(boxes, list):
+                for b in boxes:
+                    for box, c, k in zip(b.xyxy.tolist(), b.conf.tolist(), b.cls.tolist()):
+                        label = names.get(int(k), str(int(k)))
+                        if self.cfg.class_whitelist and label not in self.cfg.class_whitelist:
+                            continue
+                        x1, y1, x2, y2 = map(float, box)
+                        dets.append(Detection(bbox=[x1, y1, x2, y2], score=float(c), label=label))
+            else:
+                xyxy = boxes.xyxy.tolist()
+                conf = boxes.conf.tolist()
+                cls_ = boxes.cls.tolist()
+                for box, c, k in zip(xyxy, conf, cls_):
+                    label = names.get(int(k), str(int(k)))
+                    if self.cfg.class_whitelist and label not in self.cfg.class_whitelist:
+                        continue
+                    x1, y1, x2, y2 = map(float, box)
+                    dets.append(Detection(bbox=[x1, y1, x2, y2], score=float(c), label=label))
 
-            if self.cfg.class_whitelist and label not in self.cfg.class_whitelist:
-                continue
-
-            x1, y1, x2, y2 = [float(v) for v in b.xyxy[0].tolist()]
-            out.append({"label": label, "score": conf, "box": [x1, y1, x2, y2]})
-        return out
+        return dets
