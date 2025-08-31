@@ -1,0 +1,39 @@
+strategy: auto
+verifier: auto            # gdino_only | detector_only | two_stage
+prompts: ["person with weapon", "gun", "knife"]
+
+gdino:
+  model_id: IDEA-Research/grounding-dino-base
+  box_threshold: 0.35
+  text_threshold: 0.35
+  nms_iou: 0.50
+  long_side: 1024
+  box_expand: 0.20
+  normalize_prompts: true
+  add_relational_prompts: false
+  per_prompt: true
+
+yolo:
+  model_id: yolov8n.pt
+  score_threshold: 0.25
+  nms_iou: 0.50
+  imgsz: 640
+  class_whitelist: ["knife", "laptop", "cell phone"]
+
+detr:
+  model_id: facebook/detr-resnet-50 # or SenseTime/deformable-detr
+  score_threshold: 0.25
+  nms_iou: 0.50
+
+fusion:
+  gdino_only_default_tau: 0.60
+  class_thresholds: {}
+  borderline_window: 0
+  rule: weighted
+  alpha: 0.7
+  tau_star: 0.60
+  iou_gate: 0.40
+
+detector_only:
+  default_tau: 0.50
+  class_thresholds: {}
