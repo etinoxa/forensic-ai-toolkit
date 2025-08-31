@@ -6,7 +6,7 @@ import time, logging
 from fait.core.registry import register_embedder
 from fait.core.interfaces import Embedder
 from fait.core.utils import ensure_folder, is_image_file, cache_path, save_embedding, load_embedding, l2_normalize
-from fait.core.paths import get_paths
+from fait.core.paths import get_paths, ensure_on_first_write
 from fait.vision.services.face_service import get_face_service, FaceService
 
 log = logging.getLogger("fait.vision.embeddings.arcface")
@@ -21,10 +21,6 @@ class ArcFaceEmbedder(Embedder):
         self.embed_cache_dir = embed_cache_dir or str(paths.embeddings_cache)
         ensure_folder(self.embed_cache_dir)
         self.fs = face_service or get_face_service()
-
-    def _cache_base(self, image_path: str) -> str:
-        # include model tag so different ArcFace variants don’t share cache files
-        return cache_path(self.embed_cache_dir, image_path, self._model_tag)
 
     def name(self) -> str:
         return f"ArcFace({self.fs.device})"

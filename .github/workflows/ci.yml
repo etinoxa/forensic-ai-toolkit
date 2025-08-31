@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/src" >> $GITHUB_ENV
+      - name: Run unit tests (fast)
+        env:
+          TF_CPP_MIN_LOG_LEVEL: "3"
+          FAIT_LOG_LEVEL: "WARNING"
+        run: |
+          pytest -q --maxfail=1 -m "not slow" --cov=src --cov-report=term-missing
+
+  slow:
+    needs: unit
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      # Optional: cache HF models to speed slow job
+      - name: Cache HF models
+        uses: actions/cache@v4
+        with:
+          path: .hf_cache
+          key: hf-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            hf-${{ runner.os }}-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          python -m pip install -e .
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/src" >> $GITHUB_ENV
+          echo "HF_HOME=$GITHUB_WORKSPACE/.hf_cache" >> $GITHUB_ENV
+
+      - name: Run slow tests (models)
+        env:
+          CUDA_VISIBLE_DEVICES: ""   # CPU-only
+          TF_CPP_MIN_LOG_LEVEL: "3"
+          FAIT_LOG_LEVEL: "WARNING"
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: |
+          pytest -q --maxfail=1 -m slow --cov=src --cov-report=term-missing
