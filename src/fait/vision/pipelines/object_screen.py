@@ -171,7 +171,7 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
     run_name = cfg.run_name.strip() if cfg.run_name else _object_run_dir_name(strategy, cfg, device)
     run_dir = base / run_name
 
-    log_path = run_dir / "log.jsonl"
+    log_jsonl = run_dir / "log.jsonl"
     found_dir = run_dir / "found_images"
     review_dir = run_dir / "review_queue"
     crops_dir  = run_dir / "crops"
@@ -269,7 +269,7 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
         total=total,
         label="object_screen:progress",
         logger=log,
-        log_path=log_path,  # your .../log.jsonl path; or None to skip JSONL
+        log_path=log_jsonl,  # your .../log.jsonl path; or None to skip JSONL
         emit_every_n=5,
         emit_every_sec=2.0,
     )
@@ -316,6 +316,7 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
                     borderline_hit = True; best_entry = best_entry or entry
 
             if accepted and best_entry:
+                _append_jsonl(log_jsonl, best_entry)
                 if not _made_found: ensure_folder(found_dir); _made_found = True
                 shutil.copy2(fpath, found_dir / fpath.name)
                 if cfg.save_crops:
@@ -324,6 +325,7 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
                         _crop(img, best_entry["detector_mapped_box"]).save(crops_dir / f"{Path(fpath).stem}_crop.jpg")
                 found += 1
             elif borderline_hit and best_entry and (cfg.fusion.borderline_window and cfg.fusion.borderline_window > 0):
+                _append_jsonl(log_jsonl, best_entry)
                 if not _made_review: ensure_folder(review_dir); _made_review = True
                 shutil.copy2(fpath, review_dir / fpath.name)
                 review += 1
@@ -368,9 +370,11 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
 
                 if g >= tau:
                     accepted = True; best_entry = entry; break
+                    _append_jsonl(log_jsonl, best_entry)
                 elif cfg.fusion.borderline_window and cfg.fusion.borderline_window > 0 \
                          and abs(g - tau) <= cfg.fusion.borderline_window:
                     borderline_hit = True; best_entry = best_entry or entry
+                    _append_jsonl(log_jsonl, best_entry)
                 continue
 
             # --- TWO-STAGE MODE (unchanged) --------------------------------
@@ -422,9 +426,11 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
 
                 if ok:
                     accepted = True; best_entry = entry; break
+                    _append_jsonl(log_jsonl, best_entry)
                 elif cfg.fusion.borderline_window and cfg.fusion.borderline_window > 0 \
                          and abs(fused - tau) <= cfg.fusion.borderline_window:
                     borderline_hit = True; best_entry = best_entry or entry
+                    _append_jsonl(log_jsonl, best_entry)
 
             if accepted:
                 break
@@ -458,7 +464,7 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
         "found": found,
         "review": review,
         "run_dir": str(run_dir),
-        "log_path": str(log_path),
+        "log_path": str(log_jsonl),
     }
 
     models: Dict[str, str] = {}
