@@ -1,11 +1,15 @@
 from __future__ import annotations
 import logging
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+from typing import List, Optional
+from pathlib import Path
+from typing import Union
+import numpy as np
 
 import torch
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
+from .base import Detection
 
 log = logging.getLogger("fait.vision.detectors.deformabledetr")
 
@@ -46,6 +50,21 @@ def _iou_pairwise(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     union = area_a + area_b - inter + 1e-6
     return inter / union
 
+def _as_pil(img_or_path: Union[str, Path, Image.Image, np.ndarray]) -> Image.Image:
+    """Return a RGB PIL.Image from a path, PIL image, or numpy array."""
+    if isinstance(img_or_path, Image.Image):
+        return img_or_path.convert("RGB")
+    if isinstance(img_or_path, (str, Path)):
+        return Image.open(img_or_path).convert("RGB")
+    if isinstance(img_or_path, np.ndarray):
+        arr = img_or_path
+        if arr.ndim == 2:
+            arr = np.stack([arr]*3, axis=-1)
+        if arr.ndim == 3 and arr.shape[2] == 4:  # drop alpha
+            arr = arr[..., :3]
+        return Image.fromarray(arr.astype(np.uint8)).convert("RGB")
+    raise TypeError(f"Unsupported image type: {type(img_or_path)}")
+
 class DeformableDETR:
     """Closed-set detector run on ROI crops."""
     def __init__(self, cfg: DefDETRConfig = DefDETRConfig(), cache_dir: str | None = None):
@@ -61,32 +80,28 @@ class DeformableDETR:
         log.info("deformabledetr:init", extra={"model": cfg.model_id, "device": self.device})
 
     @torch.inference_mode()
-    def detect(self, image: Image.Image) -> List[Dict]:
-        inputs = self.processor(images=image, return_tensors="pt").to(self.device)
-        out = self.model(**inputs)
-        target_sizes = torch.tensor([image.size[::-1]]).to(self.device)  # (h,w)
-        results = self.processor.post_process_object_detection(out, target_sizes=target_sizes)[0]
-        boxes = results["boxes"]  # xyxy
-        scores = results["scores"]
-        labels = results["labels"]
+    def detect(self, image_or_path: Union[str, Path, Image.Image, np.ndarray]):
+        img = _as_pil(image_or_path)
+        w, h = img.size
 
-        # filter by score and whitelist
-        keep = scores >= self.cfg.score_threshold
-        boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+        inputs = self.processor(images=img, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
-        names = [self.id2label[int(i)] for i in labels.cpu().tolist()]
-        if self.cfg.class_whitelist:
-            mask = torch.tensor([n in self.cfg.class_whitelist for n in names], device=boxes.device, dtype=torch.bool)
-            boxes, scores, labels = boxes[mask], scores[mask], labels[mask]
-            names = [n for n, m in zip(names, mask.cpu().tolist()) if m]
+        with torch.no_grad():
+            outputs = self.model(**inputs)
 
-        # class-wise NMS
-        final = []
-        for cls in set(names):
-            idxs = [i for i, n in enumerate(names) if n == cls]
-            b = boxes[idxs]
-            s = scores[idxs]
-            keep_idx = _nms_xyxy(b, s, self.cfg.nms_iou)
-            for j in keep_idx:
-                final.append({"box": b[j].cpu().tolist(), "score": float(s[j].cpu()), "label": cls})
-        return final
+        post = self.processor.post_process_object_detection(
+            outputs,
+            threshold=self.cfg.score_threshold,
+            target_sizes=[(h, w)],
+        )[0]
+
+        dets: list[Detection] = []
+        id2label = getattr(self.model.config, "id2label", {}) or {}
+        for box, score, cls_id in zip(post["boxes"], post["scores"], post["labels"]):
+            x1, y1, x2, y2 = map(float, box.tolist())
+            label = id2label.get(int(cls_id), str(int(cls_id)))
+            if self.cfg.class_whitelist and label not in self.cfg.class_whitelist:
+                continue
+            dets.append(Detection(bbox=[x1, y1, x2, y2], score=float(score), label=label))
+        return dets

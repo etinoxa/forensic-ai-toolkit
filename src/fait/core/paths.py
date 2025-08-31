@@ -50,7 +50,7 @@ class FaitPaths:
     models_llm: Path
     logs: Path
     outputs: Path
-    embedding_cache: Path
+    embeddings_cache: Path
 
 
 _paths_singleton: FaitPaths | None = None
@@ -71,7 +71,7 @@ def get_paths() -> FaitPaths:
         models_llm=models_cache / "llm",
         logs=Path(os.getenv("FAIT_LOGS_DIR", str(fait_root / "logs"))),
         outputs=Path(os.getenv("FAIT_OUTPUTS_DIR", str(fait_root / "outputs"))),
-        embedding_cache=Path(os.getenv("FAIT_EMBEDDING_CACHE", str(cache_root / "embedding_cache"))),
+        embeddings_cache=Path(os.getenv("FAIT_EMBEDDING_CACHE", str(cache_root / "embeddings_cache"))),
     )
 
 

@@ -290,10 +290,9 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
             best_entry = None
 
             for det in dets:
-                label = str(det["label"]).lower()
-                score = float(det["score"])
+                label = det.label.lower()
+                score = float(det.score)
                 tau = cfg.detector_only.class_thresholds.get(label, cfg.detector_only.default_tau)
-
                 entry = {
                     "image": str(fpath),
                     "hash": file_md5(fpath),
@@ -302,10 +301,10 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
                     "detector_label": label,
                     "detector_score": score,
                     "iou": None,
-                    "fused": score,              # single-model score = fused
+                    "fused": score,  # single-model score
                     "threshold": tau,
                     "gdino_box": None,
-                    "detector_mapped_box": det.get("box"),
+                    "detector_mapped_box": det.bbox,  # dataclass field
                     "model_versions": {"verifier": type(cd).__name__},
                     "time": datetime.now().isoformat(timespec="seconds"),
                 }
@@ -382,14 +381,15 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
 
             px1, py1, px2, py2 = prop["box"]
             for det in dets:
-                dx1, dy1, dx2, dy2 = det["box"]
+                dx1, dy1, dx2, dy2 = det.bbox
                 mapped = [px1 + dx1, py1 + dy1, px1 + dx2, py1 + dy2]
                 iou = _iou_xyxy(prop["box"], mapped)
                 if iou < cfg.fusion.iou_gate:
                     continue
 
-                label = det["label"].lower()
-                gscore = g; cscore = float(det["score"])
+                label = det.label.lower()
+                gscore = g
+                cscore = float(det.score)
 
                 if cfg.fusion.rule == "and":
                     tau = _pick_class_threshold(cfg.fusion, label)

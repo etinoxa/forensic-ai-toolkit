@@ -23,7 +23,7 @@ class CLIPEmbedder(Embedder):
         paths = get_paths()
         self.model_id = model_id
         self.cache_dir = paths.models_face_match
-        self.embed_cache_dir = embed_cache_dir or str(paths.embedding_cache)
+        self.embed_cache_dir = embed_cache_dir or str(paths.embeddings_cache)
         ensure_folder(self.cache_dir);
         ensure_folder(self.embed_cache_dir)
         ensure_on_first_write(self.cache_dir)
