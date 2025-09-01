@@ -5,6 +5,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from dotenv import load_dotenv
 load_dotenv()
 
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+
 from fait.core.logging_config import setup_logging
 setup_logging()
 
@@ -21,14 +24,14 @@ warnings.filterwarnings("ignore", message=r"pkg_resources is deprecated.*", modu
 
 def main():
     script_dir = pathlib.Path(__file__).resolve().parent
-    reference_dir = script_dir / "datasets/audio/reference"   # adjust to your data
-    gallery_dir   = script_dir / "datasets/audio/gallery"     # adjust to your data
+    reference_dir = script_dir / "../datasets/audio/reference"   # adjust to your data
+    gallery_dir   = script_dir / "../datasets/audio/gallery"     # adjust to your data
 
     cfg = SpeakerMatchConfig(
         reference_dir=str(reference_dir.resolve()),
         gallery_dir=str(gallery_dir.resolve()),
-        thresholds=[0.70, 0.75, 0.80],        # higher = stricter
-        embedder=os.getenv("FAIT_AUDIO_EMBEDDER", "speechbrain").lower()
+        thresholds=[0.60],        # higher = stricter
+        embedder=os.getenv("FAIT_AUDIO_EMBEDDINGS_MODEL", "speechbrain").lower()
     )
     out = run_speaker_match(cfg)
 

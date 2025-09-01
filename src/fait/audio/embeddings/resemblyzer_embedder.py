@@ -1,56 +1,93 @@
 # src/fait/audio/embeddings/resemblyzer_embedder.py
-
 from __future__ import annotations
+import subprocess, tempfile
+from pathlib import Path
 from typing import Optional
-import numpy as np
-import librosa
-import torch
 
+import numpy as np
 from resemblyzer import VoiceEncoder, preprocess_wav
-from fait.core.registry import register_audio_embedder
-from fait.core.utils import save_embedding, load_embedding, ensure_folder
+
 from fait.core.paths import get_paths
+from fait.core.utils import ensure_folder
+from fait.core.registry import register_audio_embedder
 from .base import _BaseAudioEmbedder
+
+try:
+    import imageio_ffmpeg as ffmpegio  # downloads/locates an ffmpeg binary cross-platform
+except Exception:
+    ffmpegio = None
+
 
 @register_audio_embedder("resemblyzer")
 class ResemblyzerEmbedder(_BaseAudioEmbedder):
     """
-    Speaker embeddings via Resemblyzer (256-dim).
+    Speaker embeddings using Resemblyzer.
+    This version adds an FFmpeg fallback so formats like .m4a/.mp3 work on Windows.
     """
     def __init__(
         self,
-        model_tag_override: str | None = None,
-        embed_cache_dir: str | None = None,
+        embed_cache_dir: Optional[str] = None,
+        sample_rate: int = 16000,
     ):
         super().__init__(embed_cache_dir=embed_cache_dir)
+        self.sample_rate = sample_rate
+        self.encoder = VoiceEncoder()  # uses torch under the hood
+
+        # just to ensure cache roots exist
         paths = get_paths()
-        # Resemblyzer downloads into ~/.cache by default;
-        # no weights arg; we just ensure cache dir exists for our embeddings.
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.encoder = VoiceEncoder(device=self.device)
-        self._tag = model_tag_override or "resemblyzer"
+        ensure_folder(paths.models_cache / "audio")
 
     def name(self) -> str:
         return "Resemblyzer"
 
-    @property
-    def model_tag(self) -> str:
-        return self._tag
+    # ---------- public API ----------
+    def embed_file(self, audio_path: str, use_cache: bool = True) -> np.ndarray:
+        """
+        Returns a 256-D float32 embedding.
+        Transparent FFmpeg conversion if librosa can't read (e.g., .m4a on Windows).
+        """
+        p = Path(audio_path)
+        tmp_wav: Optional[Path] = None
 
-    def embed_file(self, audio_path: str, use_cache: bool = True) -> Optional[np.ndarray]:
-        base = self._cache_base(audio_path)
-        for ext in (".pkl", ".npy"):
-            p = base + ext
-            if use_cache and os.path.exists(p):
-                return load_embedding(p)
+        # Try the normal path first
+        try:
+            wav = preprocess_wav(str(p))
+        except Exception:
+            # If that failed, convert to 16k mono wav via FFmpeg, then retry
+            tmp_wav = self._ffmpeg_to_wav(p, sr=self.sample_rate)
+            wav = preprocess_wav(str(tmp_wav))
+        finally:
+            # cleanup temp
+            if tmp_wav and tmp_wav.exists():
+                try:
+                    tmp_wav.unlink()
+                except Exception:
+                    pass
 
-        # Resemblyzer has its own robust WAV loader + VAD
-        wav = preprocess_wav(audio_path)
-        if wav is None or len(wav) == 0:
-            return None
         emb = self.encoder.embed_utterance(wav).astype(np.float32)
-        # L2 normalize for consistent cosine compare with other models
-        n = np.linalg.norm(emb) + 1e-9
-        emb = (emb / n).astype(np.float32)
-        save_embedding(base, emb)
         return emb
+
+    # ---------- helpers ----------
+    def _ffmpeg_to_wav(self, src: Path, sr: int = 16000) -> Path:
+        """
+        Convert arbitrary audio (m4a/mp3/…) -> temporary 16kHz mono WAV using imageio-ffmpeg.
+        """
+        if ffmpegio is None:
+            raise RuntimeError(
+                "imageio-ffmpeg is not installed. Please `pip install imageio-ffmpeg` "
+                "to enable .m4a/.mp3 conversion on Windows."
+            )
+        tmpdir = Path(tempfile.mkdtemp(prefix="ffconv_"))
+        dst = tmpdir / f"{src.stem}_16k_mono.wav"
+
+        cmd = [
+            ffmpegio.get_ffmpeg_exe(),
+            "-y",
+            "-loglevel", "error",
+            "-i", str(src),
+            "-ar", str(sr),
+            "-ac", "1",
+            str(dst),
+        ]
+        subprocess.run(cmd, check=True)
+        return dst
