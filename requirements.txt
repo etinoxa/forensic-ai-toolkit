@@ -30,6 +30,11 @@ einops
 pydantic
 python-dotenv
 
+#AUDIO
+speechbrain
+resemblyzer
+librosa
+soundfile
 
 # Other dependencies
 numpy

@@ -47,6 +47,7 @@ class FaitPaths:
     models_cache: Path
     models_face_match: Path
     models_object_screen: Path
+    models_audio: Path
     models_llm: Path
     logs: Path
     outputs: Path
@@ -68,6 +69,7 @@ def get_paths() -> FaitPaths:
         models_cache=models_cache,
         models_face_match=models_cache / "face_match",
         models_object_screen=models_cache / "object_screen",
+        models_audio=models_cache / "audio",
         models_llm=models_cache / "llm",
         logs=Path(os.getenv("FAIT_LOGS_DIR", str(fait_root / "logs"))),
         outputs=Path(os.getenv("FAIT_OUTPUTS_DIR", str(fait_root / "outputs"))),

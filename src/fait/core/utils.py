@@ -11,19 +11,38 @@ import numpy as np
 
 # ───────────────────────────── Filesystem & IO ─────────────────────────────
 
+
+DEFAULT_AUDIO_EXTS = (
+    ".wav", ".flac", ".mp3", ".m4a", ".aac",
+    ".ogg", ".opus", ".wma", ".aiff", ".aif", ".aifc",
+    ".amr", ".caf", ".mka", ".mp2", ".mpga"
+)
+
+DEFAULT_VIDEO_EXTS = (
+    ".mp4", ".avi", ".mov", ".mkv", ".webm"
+)
+
+DEFAULT_IMAGE_EXTS = (
+    ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"
+)
 def ensure_folder(path: str | Path) -> None:
     Path(path).mkdir(parents=True, exist_ok=True)
 
 def ensure_parent_dir(path: str | Path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-def is_image_file(path: str | Path) -> bool:
+def is_image_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_IMAGE_EXTS) -> bool:
     p = str(path).lower()
-    return os.path.isfile(path) and p.endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"))
+    return Path(path).is_file() and p.endswith(exts)
 
-def is_video_file(path: str | Path) -> bool:
+def is_video_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_VIDEO_EXTS) -> bool:
     p = str(path).lower()
-    return os.path.isfile(path) and p.endswith((".mp4", ".avi", ".mov", ".mkv", ".webm"))
+    return Path(path).is_file() and p.endswith(exts)
+
+def is_audio_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_AUDIO_EXTS) -> bool:
+    p = str(path).lower()
+    return Path(path).is_file() and p.endswith(exts)
+
 
 def walk_files(root: str | Path,
                allowed_exts: Optional[Iterable[str]] = None,
@@ -534,7 +553,7 @@ def fuse_scores(
 __all__ = [
     # IO & FS
     "ensure_folder", "is_image_file", "is_video_file", "walk_files",
-    "to_safe_filename", "write_jsonl",
+    "to_safe_filename", "write_jsonl", is_audio_file, "append_jsonl",
     # Hashing / cache
     "sha256_file", "cache_path", "save_embedding", "load_embedding", "file_md5",
     # Math / metrics
