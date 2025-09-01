@@ -35,6 +35,7 @@ speechbrain
 resemblyzer
 librosa
 soundfile
+imageio_ffmpeg
 
 # Other dependencies
 numpy
