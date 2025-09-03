@@ -1,18 +1,16 @@
 # src/fait/vision/detectors/grounding_dino.py
 from __future__ import annotations
 
+import logging
+import inspect
+import torchvision.ops as tvops
+import torch
+
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Iterable, Set
-from pathlib import Path
-import logging
-
-import torch
 from PIL import Image
-import torchvision.ops as tvops
-
 
 log = logging.getLogger("fait.vision.detectors.gdino")
-
 
 @dataclass
 class GDINOConfig:
@@ -124,6 +122,13 @@ class GroundingDINO:
         return [nx1, ny1, nx2, ny2]
 
     @staticmethod
+    def _first_key(d: dict, keys: tuple[str, ...]):
+        for k in keys:
+            if k in d and d[k] is not None:
+                return d[k]
+        return None
+
+    @staticmethod
     def _to_device(batch):
         """Move a transformers BatchFeature or dict of tensors to current device (robustly)."""
         try:
@@ -144,7 +149,6 @@ class GroundingDINO:
         # 1) Normalize/enrich prompts and build a single caption "p1 . p2 . p3 ."
         phrases = self._enrich_prompts(prompts)
         phrases = [self._norm_prompt(p) for p in phrases if isinstance(p, str) and p.strip()]
-        # dedupe while keeping order
         seen: Set[str] = set()
         phrases = [p for p in phrases if not (p in seen or seen.add(p))]
         if not phrases:
@@ -159,7 +163,7 @@ class GroundingDINO:
         # 3) Tokenize (pad/truncate) and forward
         inputs = self.processor(
             images=img,
-            text=caption,           # single caption string (dot-separated phrases)
+            text=caption,  # single caption string (dot-separated phrases)
             padding=True,
             truncation=True,
             return_tensors="pt",
@@ -172,49 +176,98 @@ class GroundingDINO:
 
         outputs = self.model(**inputs)
 
-        # 4) Post-process with correct target sizes (H, W)
-        H, W = img.size[1], img.size[0]
+        # 4) Post-process with version-proof arg names
+        H, W = img.size[1], img.size[0]  # PIL: (W, H)
         target_sizes = torch.tensor([[H, W]], device=self.device)
+
+        pp = self.processor.post_process_grounded_object_detection
+        sig = set(inspect.signature(pp).parameters)
+
+        kw = {}
+        # ids parameter name differs on some versions
+        if "input_ids" in sig:
+            kw["input_ids"] = inputs["input_ids"]
+        elif "text_inputs" in sig:
+            kw["text_inputs"] = inputs["input_ids"]
+
+        # thresholds changed names across releases
+        bt = float(self.cfg.box_threshold)
+        tt = float(self.cfg.text_threshold)
+        nms = float(getattr(self.cfg, "nms_iou", 0.5))
+
+        if "box_threshold" in sig:
+            kw["box_threshold"] = bt
+        elif "boxes_threshold" in sig:
+            kw["boxes_threshold"] = bt
+        elif "threshold" in sig:
+            kw["threshold"] = bt
+
+        if "text_threshold" in sig:
+            kw["text_threshold"] = tt
+        elif "phrase_threshold" in sig:
+            kw["phrase_threshold"] = tt
+
+        if "nms_threshold" in sig:  # some versions expose this here
+            kw["nms_threshold"] = nms
+
         try:
-            processed = self.processor.post_process_grounded_object_detection(
-                outputs, inputs["input_ids"],
-                box_threshold=self.cfg.box_threshold,
-                text_threshold=self.cfg.text_threshold,
-                target_sizes=target_sizes
-            )[0]
+            processed = pp(outputs=outputs, target_sizes=target_sizes, **kw)
         except TypeError:
-            # older transformers signature
-            processed = self.processor.post_process_grounded_object_detection(
-                outputs=outputs, input_ids=inputs["input_ids"],
-                box_threshold=self.cfg.box_threshold,
-                text_threshold=self.cfg.text_threshold,
-                target_sizes=target_sizes
-            )[0]
+            # final fallback: call with minimal args
+            processed = pp(outputs=outputs, target_sizes=target_sizes)
 
-        boxes = processed["boxes"].detach().cpu()    # Tensor [N, 4] xyxy in resized image space
-        scores = processed["scores"].detach().cpu()  # Tensor [N]
-        labels = processed["labels"]                 # List[str] aligned to phrases
+        # Some versions return a list of dicts
+        if isinstance(processed, list):
+            processed = processed[0]
 
-        if boxes.numel() == 0:
+        # 5) Robust extraction of boxes/scores/labels
+        boxes = self._first_key(processed, ("boxes", "pred_boxes", "bboxes"))
+        scores = self._first_key(processed, ("scores", "logits", "confidences"))
+        labels = self._first_key(processed, ("text_labels", "labels", "phrases"))
+
+        # Convert lists to tensors; squeeze singleton dims
+        if isinstance(boxes, list):
+            boxes = torch.tensor(boxes, dtype=torch.float32)
+        if isinstance(scores, list):
+            scores = torch.tensor(scores, dtype=torch.float32)
+        if isinstance(boxes, torch.Tensor) and boxes.ndim > 2:
+            boxes = boxes.squeeze(0)
+        if isinstance(scores, torch.Tensor) and scores.ndim > 1:
+            scores = scores.squeeze()
+
+        # Bail out cleanly if nothing there
+        if boxes is None or scores is None or (isinstance(boxes, torch.Tensor) and boxes.numel() == 0):
             return []
 
-        # 5) Single NMS pass
-        keep = tvops.nms(boxes, scores, self.cfg.nms_iou)
-        boxes = boxes[keep]
-        scores = scores[keep]
-        labels = [labels[i] for i in keep.tolist()]
+        # If labels are integer ids, map back to the caption phrases
+        if labels is not None and torch.is_tensor(labels):
+            idxs = labels.tolist()
+            labels = [phrases[i] if 0 <= i < len(phrases) else str(i) for i in idxs]
 
-        # 6) Scale boxes back to original size if we upsampled
+        # 6) Single NMS pass
+        # Move to CPU floats for NMS
+        boxes = boxes.detach().to("cpu").float()
+        scores = scores.detach().to("cpu").float()
+
+        # If labels are integer ids, map to phrase text
+        if labels is not None and torch.is_tensor(labels):
+            idxs = labels.tolist()
+            labels = [phrases[i] if 0 <= i < len(phrases) else str(i) for i in idxs]
+        elif labels is None:
+            labels = [""] * boxes.shape[0]
+
+        # 7) Scale boxes back to original size if we upsampled
         if original.size != img.size:
             sx = original.size[0] / img.size[0]
             sy = original.size[1] / img.size[1]
             boxes = boxes * torch.tensor([sx, sy, sx, sy])
 
-        # 7) Optional box expansion (padding)
+        # 8) Optional box expansion (padding)
         W0, H0 = original.size
         proposals: List[Dict] = []
-        for b, s, lab in zip(boxes.tolist(), scores.tolist(), labels):
+        for i, (b, s) in enumerate(zip(boxes.tolist(), scores.tolist())):
             out_box = self._expand_xyxy(b, W0, H0, self.cfg.box_expand) if self.cfg.box_expand > 0 else b
+            lab = (labels[i] if labels is not None and i < len(labels) else "") or ""
             proposals.append({
                 "box": [float(x) for x in out_box],
                 "score": float(s),
