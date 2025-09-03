@@ -1,4 +1,4 @@
-# src/fait/vision/pipelines/object_screen.py  (only the changed bits)
+# src/fait/vision/pipelines/object_screen.py
 
 from typing import List, Dict, Optional, Tuple, Literal
 import os, json, time, shutil, re
@@ -11,7 +11,7 @@ import torch
 from PIL import Image
 
 from fait.core.paths import get_paths
-from fait.core.utils import ProgressMeter, ensure_folder, file_md5, write_object_report
+from fait.core.utils import ProgressMeter, ensure_folder, file_md5, write_object_report, fuse_scores
 from fait.vision.services.object_service import get_object_service
 from fait.vision.detectors.grounding_dino import GDINOConfig
 from fait.vision.detectors.deformable_detr import DefDETRConfig
@@ -395,14 +395,15 @@ def run_object_screen(cfg: ScreenConfig) -> Dict:
                 gscore = g
                 cscore = float(det.score)
 
-                if cfg.fusion.rule == "and":
-                    tau = _pick_class_threshold(cfg.fusion, label)
-                    ok = (gscore >= tau) and (cscore >= tau)
-                    fused = min(gscore, cscore)
-                else:
-                    fused = cfg.fusion.alpha * gscore + (1 - cfg.fusion.alpha) * cscore
-                    tau = cfg.fusion.tau_star
-                    ok = fused >= tau
+                # if cfg.fusion.rule == "and":
+                #     tau = _pick_class_threshold(cfg.fusion, label)
+                #     ok = (gscore >= tau) and (cscore >= tau)
+                #     fused = min(gscore, cscore)
+                # else:
+                #     fused = cfg.fusion.alpha * gscore + (1 - cfg.fusion.alpha) * cscore
+                #     tau = cfg.fusion.tau_star
+                #     ok = fused >= tau
+                fused, tau, ok = fuse_scores(gscore, cscore, label, cfg.fusion)
 
                 entry = {
                     "image": str(fpath),

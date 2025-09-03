@@ -1,0 +1,54 @@
+# config/fusion.yaml
+# Ready-made presets you can load in quickstarts.
+
+# Default: conservative "AND" gate with per-class thresholds
+and_default:
+  method: weighted
+  gdino_only_default_tau: 0.50
+  class_thresholds:
+    gun: 0.60
+    handgun: 0.60
+    pistol: 0.60
+    revolver: 0.60
+    knife: 0.55
+    "kitchen knife": 0.55
+    "chef knife": 0.55
+  # IoU gate & other knobs still live in your ScreenConfig.fusion
+  # tau_star is ignored for "and"
+
+# Linear weighted blend on raw scores
+weighted_60_40:
+  method: weighted
+  alpha: 0.6        # 60% GDINO, 40% detector
+  tau_star: 0.60
+
+# Product (good when both scores are in [0,1] and must agree)
+product_strict:
+  method: product
+  tau_star: 0.45
+
+# Max (for recall, accept if either model is confident)
+max_recall:
+  method: max
+  tau_star: 0.70
+
+# Sum with z-norm calibration (example means/stds; tune from data)
+sum_znorm:
+  method: sum
+  tau_star: 1.2
+  gdino_mean: 0.45
+  gdino_std: 0.15
+  det_mean: 0.55
+  det_std: 0.20
+
+# Logistic (Platt-like) on z-scored inputs
+logistic_calibrated:
+  method: logistic
+  tau_star: 0.5
+  gdino_mean: 0.45
+  gdino_std: 0.15
+  det_mean: 0.55
+  det_std: 0.20
+  w_g: 1.0
+  w_c: 1.0
+  b: 0.0
