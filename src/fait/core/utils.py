@@ -1,11 +1,11 @@
 # src/fait/core/utils.py
 from __future__ import annotations
 from dataclasses import dataclass
-import os, re, io, json, hashlib, pickle
+import os, re, io, json, hashlib, pickle, math, tempfile
 from pathlib import Path
-from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union
+from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union, Mapping
 import logging, json, time
-
+import subprocess
 import numpy as np
 
 
@@ -42,6 +42,85 @@ def is_video_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_VIDEO_EXTS) 
 def is_audio_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_AUDIO_EXTS) -> bool:
     p = str(path).lower()
     return Path(path).is_file() and p.endswith(exts)
+
+# --- Audio loading helpers (FFmpeg fallback via imageio-ffmpeg) ---
+def load_audio_ffmpeg(
+    path: str | Path,
+    sr: int = 16000,
+    mono: bool = True,
+    offset: float = 0.0,
+    duration: float | None = None,
+) -> tuple[np.ndarray, int]:
+    """
+    Decode with FFmpeg (via imageio-ffmpeg) to float32 mono PCM in [-1, 1].
+    Works for m4a/mp4/mov/aac and most formats.
+    """
+    import imageio_ffmpeg  # ensure installed: pip install imageio-ffmpeg
+
+    exe = imageio_ffmpeg.get_ffmpeg_exe()
+    path = str(path)
+
+    cmd = [exe, "-v", "error"]
+    if offset and offset > 0:
+        cmd += ["-ss", f"{offset}"]
+    cmd += ["-i", path]
+    if duration and duration > 0:
+        cmd += ["-t", f"{duration}"]
+
+    # output raw 16-bit PCM to stdout, resampled
+    ac = "1" if mono else "2"
+    cmd += ["-f", "s16le", "-acodec", "pcm_s16le", "-ac", ac, "-ar", str(sr), "-"]
+
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    if not proc.stdout:
+        raise RuntimeError(f"FFmpeg returned no audio data for {path}")
+
+    pcm = np.frombuffer(proc.stdout, np.int16).astype(np.float32) / 32768.0
+    if not mono:
+        pcm = pcm.reshape(-1, 2).mean(axis=1)  # downmix anyway for embedder
+    return pcm, sr
+
+def load_audio_any(
+    path: str | Path,
+    sr: int = 16000,
+    mono: bool = True,
+    offset: float = 0.0,
+    duration: float | None = None,
+    prefer: str | None = None,  # "ffmpeg" to force FFmpeg
+) -> tuple[np.ndarray, int]:
+    """
+    Try soundfile/librosa first; if the format isn't supported (e.g., m4a),
+    fall back to FFmpeg. Set prefer="ffmpeg" or env FAIT_AUDIO_LOADER=ffmpeg to force.
+    """
+    prefer = (prefer or os.getenv("FAIT_AUDIO_LOADER", "")).strip().lower()
+    path = Path(path)
+
+    if prefer == "ffmpeg":
+        return load_audio_ffmpeg(path, sr=sr, mono=mono, offset=offset, duration=duration)
+
+    # Try soundfile/librosa
+    try:
+        import soundfile as sf
+        data, file_sr = sf.read(str(path), always_2d=False)
+        if data.ndim == 2:
+            data = data.mean(axis=1)
+        # resample if needed
+        if file_sr != sr:
+            import librosa
+            data = librosa.resample(y=data, orig_sr=file_sr, target_sr=sr)
+        return data.astype(np.float32), sr
+    except Exception:
+        pass
+
+    # Try librosa directly (may use audioread)
+    try:
+        import librosa
+        data, file_sr = librosa.load(str(path), sr=sr, mono=True, offset=offset, duration=duration)
+        return data.astype(np.float32), sr
+    except Exception:
+        # fallback to FFmpeg for unsupported formats (e.g., m4a)
+        return load_audio_ffmpeg(path, sr=sr, mono=mono, offset=offset, duration=duration)
+
 
 
 def walk_files(root: str | Path,
@@ -154,6 +233,160 @@ def load_embedding(path: str | Path) -> np.ndarray:
     with open(path, "rb") as f:
         return pickle.load(f)
 
+def save_numpy(
+    path: str | Path,
+    data,
+    *,
+    dtype: np.dtype | str | None = np.float32,
+    compressed: bool | None = None,
+) -> str:
+    """
+    Save a NumPy array to `path`, creating parent folders as needed.
+
+    Behavior:
+      • If path ends with '.npy'  -> np.save
+      • If path ends with '.npz'  -> np.savez_compressed (key 'arr')
+      • Else (no/other ext)       -> pickle to '.pkl' (unless ext given)
+
+    Args:
+      path: Target output path.
+      data: Array-like data to save.
+      dtype: Optional dtype cast before saving (default float32). Use None to skip.
+      compressed: If True and ext is not '.pkl', prefer compressed '.npz'.
+                  If ext is explicitly '.npy' or '.npz', the extension wins.
+
+    Returns:
+      Final file path (str).
+    """
+    p = Path(path)
+    # Ensure parent directory exists
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    arr = np.asarray(data)
+    if dtype is not None and arr.dtype != dtype:
+        arr = arr.astype(dtype, copy=False)
+
+    ext = p.suffix.lower()
+    final_path = p
+
+    # Decide actual format/extension
+    if ext in (".npy", ".npz"):
+        pass  # honor the given extension
+    elif compressed is True:
+        # Force compressed npz if requested explicitly
+        final_path = p.with_suffix(".npz")
+        ext = ".npz"
+    elif ext == "":
+        # Default fallback: pickle when no extension is provided
+        final_path = p.with_suffix(".pkl")
+        ext = ".pkl"
+
+    # Write atomically via a temp file (important on Windows)
+    with tempfile.NamedTemporaryFile(delete=False, dir=str(final_path.parent), suffix=".tmp") as tmp:
+        tmp_path = Path(tmp.name)
+
+    try:
+        if ext == ".npy":
+            np.save(tmp_path, arr)
+        elif ext == ".npz":
+            np.savez_compressed(tmp_path, arr=arr)
+        else:
+            # Pickle fallback (.pkl or unknown ext)
+            with open(tmp_path, "wb") as f:
+                pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # Atomic replace into place
+        os.replace(tmp_path, final_path)
+    finally:
+        # If something failed before replace, clean the temp file
+        if tmp_path.exists() and not final_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+    return str(final_path)
+
+def load_numpy_safe(path: str | Path, dtype: Optional[np.dtype] = None, mmap_mode: Optional[str] = None) -> Optional[np.ndarray]:
+    """
+    Safely load a cached numpy array.
+
+    - Supports .npy (preferred), .npz (uses the first array), and .pkl/.pickle (best-effort).
+    - Returns None if the file doesn't exist or on any error.
+    - If `dtype` is provided, casts the array without copying when possible.
+    - `mmap_mode` is passed to numpy for .npy/.npz (e.g., 'r').
+
+    Parameters
+    ----------
+    path : str | Path
+        Path to the cached array. If no suffix, ".npy" is assumed.
+    dtype : np.dtype, optional
+        Cast the loaded array to this dtype.
+    mmap_mode : str, optional
+        Memory-map mode for numpy load (e.g., 'r').
+
+    Returns
+    -------
+    np.ndarray | None
+        The loaded array or None on failure.
+    """
+    try:
+        p = Path(path)
+        if p.is_dir():
+            return None
+
+        # If no extension, prefer .npy
+        if not p.suffix:
+            p_npy = p.with_suffix(".npy")
+            if p_npy.exists():
+                p = p_npy
+            elif not p.exists():
+                return None  # nothing to load
+
+        if not p.exists():
+            return None
+
+        ext = p.suffix.lower()
+
+        if ext == ".npy":
+            arr = np.load(str(p), allow_pickle=False, mmap_mode=mmap_mode)
+            if not isinstance(arr, np.ndarray):
+                return None
+        elif ext == ".npz":
+            with np.load(str(p), allow_pickle=False, mmap_mode=mmap_mode) as data:
+                keys = list(data.keys())
+                if not keys:
+                    return None
+                arr = data[keys[0]]
+                if not isinstance(arr, np.ndarray):
+                    return None
+        elif ext in {".pkl", ".pickle"}:
+            # Last-resort compatibility with old caches
+            with open(p, "rb") as f:
+                obj: Any = pickle.load(f)
+            try:
+                arr = np.asarray(obj)
+            except Exception:
+                return None
+            if not isinstance(arr, np.ndarray):
+                return None
+        else:
+            # Unknown extension: try numpy and swallow errors
+            try:
+                arr = np.load(str(p), allow_pickle=False, mmap_mode=mmap_mode)
+                if not isinstance(arr, np.ndarray):
+                    return None
+            except Exception:
+                return None
+
+        if dtype is not None:
+            arr = arr.astype(dtype, copy=False)
+
+        return arr
+
+    except Exception:
+        # Never raise from a cache read
+        return None
 
 # ───────────────────────────── Math / Metrics ─────────────────────────────
 
@@ -452,6 +685,101 @@ class ProgressMeter:
             append_jsonl(self.log_path, {"event": "progress", **payload})
 
 
+# ───────────────────────────── Fusion ─────────────────────────────
+
+def _fcfg_get(cfg: Any, key: str, default: Any = None):
+    """Read attribute or mapping key from a config-ish object."""
+    if hasattr(cfg, key):
+        return getattr(cfg, key)
+    if isinstance(cfg, Mapping):
+        return cfg.get(key, default)
+    return default
+
+def _zscore(x: float, mean: Optional[float], std: Optional[float]) -> float:
+    if mean is None or std is None or std <= 0:
+        return x
+    return (x - mean) / std
+
+def _sigmoid(x: float) -> float:
+    # numerically stable sigmoid
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    else:
+        z = math.exp(x)
+        return z / (1.0 + z)
+
+def fuse_scores(
+    gscore: float,
+    cscore: float,
+    label: str,
+    fcfg: Any,
+) -> tuple[float, float, bool]:
+    """
+    Generic score-level fusion.
+    Returns: (fused_score, threshold_used, is_accept)
+
+    Supports fcfg fields (attr or mapping):
+      method: "and" | "weighted" | "sum" | "product" | "max" | "logistic"
+      alpha, tau_star
+      class_thresholds: dict
+      gdino_only_default_tau
+      gdino_mean, gdino_std, det_mean, det_std
+      w_g, w_c, b   (for "logistic")
+    """
+    method = (_fcfg_get(fcfg, "method", "and") or "and").lower()
+    alpha = float(_fcfg_get(fcfg, "alpha", 0.5))
+    tau_star = float(_fcfg_get(fcfg, "tau_star", 0.6))
+    class_thresholds = _fcfg_get(fcfg, "class_thresholds", {}) or {}
+    default_tau = float(_fcfg_get(fcfg, "gdino_only_default_tau", 0.5))
+
+    gdino_mean = _fcfg_get(fcfg, "gdino_mean", None)
+    gdino_std  = _fcfg_get(fcfg, "gdino_std",  None)
+    det_mean   = _fcfg_get(fcfg, "det_mean",   None)
+    det_std    = _fcfg_get(fcfg, "det_std",    None)
+
+    w_g = float(_fcfg_get(fcfg, "w_g", 1.0))
+    w_c = float(_fcfg_get(fcfg, "w_c", 1.0))
+    b   = float(_fcfg_get(fcfg, "b",   0.0))
+
+    class_tau = float(class_thresholds.get(label.lower(), default_tau))
+    tau = class_tau if method == "and" else tau_star
+
+    # optional z-norm for methods that combine the two scores
+    g = _zscore(gscore, gdino_mean, gdino_std)
+    c = _zscore(cscore, det_mean,   det_std)
+
+    if method == "and":
+        fused = min(gscore, cscore)        # report the bottleneck score
+        ok = (gscore >= class_tau) and (cscore >= class_tau)
+
+    elif method == "weighted":
+        fused = alpha * gscore + (1.0 - alpha) * cscore
+        ok = fused >= tau
+
+    elif method == "sum":
+        fused = g + c
+        ok = fused >= tau
+
+    elif method == "product":
+        fused = max(0.0, min(1.0, gscore * cscore))
+        ok = fused >= tau
+
+    elif method == "max":
+        fused = max(gscore, cscore)
+        ok = fused >= tau
+
+    elif method == "logistic":
+        fused = _sigmoid(w_g * g + w_c * c + b)
+        ok = fused >= tau
+
+    else:
+        # fallback to weighted
+        fused = alpha * gscore + (1.0 - alpha) * cscore
+        ok = fused >= tau
+
+    return float(fused), float(tau), bool(ok)
+
 
 # ───────────────────────────── Exports ─────────────────────────────
 
@@ -460,7 +788,7 @@ __all__ = [
     "ensure_folder", "is_image_file", "is_video_file", "walk_files",
     "to_safe_filename", "write_jsonl", is_audio_file, "append_jsonl",
     # Hashing / cache
-    "sha256_file", "cache_path", "save_embedding", "load_embedding", "file_md5",
+    "sha256_file", "cache_path", "save_embedding", "load_embedding", "save_numpy", "file_md5",
     # Math / metrics
     "l2_normalize", "cosine_similarity", "compute_distance",
     "sort_pairs", "topk_pairs",
@@ -468,4 +796,6 @@ __all__ = [
     "plot_scores", "plot_distances", "plot_similarities", "write_report", "write_object_report",
     # Progress status
     "ProgressMeter",
+    # Fusion
+    "fuse_scores",
 ]

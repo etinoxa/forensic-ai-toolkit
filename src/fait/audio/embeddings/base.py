@@ -20,7 +20,13 @@ class AudioEmbedder(Protocol):
 @dataclass
 class _BaseAudioEmbedder:
     """Utility base with shared caching behavior."""
-    embed_cache_dir: Optional[str] = None
+    # embed_cache_dir: Optional[str] = None
+
+    def __init__(self, embed_cache_dir: Optional[str] = None):
+        p = get_paths()
+        # ensure a sane default
+        self.embed_cache_dir = embed_cache_dir or str((p.embeddings_cache / "audio").resolve())
+        ensure_folder(self.embed_cache_dir)
 
     def __post_init__(self) -> None:
         paths = get_paths()

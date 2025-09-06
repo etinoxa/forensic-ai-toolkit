@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, Optional
 
 from fait.core.paths import get_paths, ensure_on_first_write
-from ..embeddings.speechbrain_embedder import SpeechBrainEmbedder
-from ..embeddings.resemblyzer_embedder import ResemblyzerEmbedder
+from fait.audio.embeddings.speechbrain_embedder import SpeechBrainEmbedder
+from fait.audio.embeddings.wavlm_embedder import WavLMEmbedder
+from fait.audio.embeddings.resnet_embedder import ResNetEmbedder
+from fait.audio.embeddings.titanet_embedder import TitanetEmbedder
 
 @dataclass
 class SpeakerServiceConfig:
@@ -14,29 +16,36 @@ class SpeakerServiceConfig:
     pass
 
 class SpeakerModelsService:
-    """Small pooled service to reuse embedders in a process."""
     def __init__(self, cfg: SpeakerServiceConfig = SpeakerServiceConfig()):
         self.cfg = cfg
         self.paths = get_paths()
         ensure_on_first_write(self.paths.models_cache / "audio")
-        self._pool: Dict[Tuple[str], object] = {}
+        self._pool: Dict[Tuple[str,str], object] = {}
 
-    def get_speechbrain(self) -> SpeechBrainEmbedder:
-        key = ("speechbrain",)
-        if key not in self._pool:
-            self._pool[key] = SpeechBrainEmbedder()
-        return self._pool[key]  # type: ignore[return-value]
+    def _key(self, kind: str, model_id: str) -> Tuple[str,str]:
+        return (kind, model_id)
 
-    def get_resemblyzer(self) -> ResemblyzerEmbedder:
-        key = ("resemblyzer",)
-        if key not in self._pool:
-            self._pool[key] = ResemblyzerEmbedder()
-        return self._pool[key]  # type: ignore[return-value]
+    def get_speechbrain(self, model_id: str) -> SpeechBrainEmbedder:
+        k = self._key("speechbrain", model_id)
+        if k not in self._pool:
+            self._pool[k] = SpeechBrainEmbedder(model_id=model_id)
+        return self._pool[k]
 
-# convenience
-_service_singleton: Optional[SpeakerModelsService] = None
+    def get_titanet(self, model_id: str = "nvidia/speakerverification_en_titanet_large") -> TitanetEmbedder:
+        k = ("titanet", model_id)
+        if k not in self._pool:
+            self._pool[k] = TitanetEmbedder(model_id=model_id)
+        return self._pool[k]
+
+    def get_wavlm(self, model_id: str = "microsoft/wavlm-base-plus-sv") -> WavLMEmbedder:
+        k = ("wavlm", model_id)
+        if k not in self._pool:
+            self._pool[k] = WavLMEmbedder(model_id=model_id)
+        return self._pool[k]
+
+_service: Optional[SpeakerModelsService] = None
 def get_speaker_service() -> SpeakerModelsService:
-    global _service_singleton
-    if _service_singleton is None:
-        _service_singleton = SpeakerModelsService()
-    return _service_singleton
+    global _service
+    if _service is None:
+        _service = SpeakerModelsService()
+    return _service

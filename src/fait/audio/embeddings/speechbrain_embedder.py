@@ -1,135 +1,126 @@
 # src/fait/audio/embeddings/speechbrain_embedder.py
 from __future__ import annotations
-import os, tempfile, subprocess
+import os, shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import torch
-import torchaudio
-from torchaudio.transforms import Resample
+import librosa
 
-try:
-    import imageio_ffmpeg as ffmpegio  # fallback converter for m4a/mp3/etc.
-except Exception:
-    ffmpegio = None
+from speechbrain.utils import fetching as sb_fetching
 
-from speechbrain.pretrained import EncoderClassifier
+from huggingface_hub import snapshot_download
+from speechbrain.inference import EncoderClassifier
 
 from fait.core.paths import get_paths
-from fait.core.utils import ensure_folder, save_embedding, load_embedding
+from fait.core.utils import ensure_folder, cache_path, load_audio_any
+from fait.audio.embeddings.base import _BaseAudioEmbedder
 from fait.core.registry import register_audio_embedder
-from .base import _BaseAudioEmbedder  # <- package import (no relative import from a script)
 
+if os.name == "nt":
+    _real_symlink_to = Path.symlink_to  # keep original for non-error cases
+
+    def _symlink_or_copy(self: Path, target, target_is_directory=False):
+        """
+        Try to create a real symlink; if not permitted, copy files/dirs instead.
+        This makes SpeechBrain's fetch/link steps work on Windows without admin/dev mode.
+        """
+        try:
+            # Try real symlink first (works if user has privileges)
+            return _real_symlink_to(self, target, target_is_directory)
+        except Exception:
+            src = Path(target)
+            dst = self
+
+            # Ensure parent exists
+            dst.parent.mkdir(parents=True, exist_ok=True)
+
+            # If destination exists, remove appropriately
+            if dst.exists():
+                if dst.is_dir() and not dst.is_symlink():
+                    shutil.rmtree(dst, ignore_errors=True)
+                else:
+                    try:
+                        dst.unlink()
+                    except Exception:
+                        # last resort: remove tree
+                        shutil.rmtree(dst, ignore_errors=True)
+
+            if src.is_dir():
+                # Copy whole directory tree
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                # If dst is a directory path (sometimes SB passes a dir as target),
+                # place the file under it:
+                if dst.exists() and dst.is_dir():
+                    shutil.copy2(src, dst / src.name)
+                else:
+                    # Ensure parent exists (again in case we changed dst)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+
+            return None  # for API compatibility
+
+    # Monkey-patch globally for this process
+    Path.symlink_to = _symlink_or_copy  # type: ignore[assignment]
+
+@dataclass
+class _Cfg:
+    model_id: str = "speechbrain/spkrec-ecapa-voxceleb"
+    sample_rate: int = 16000
 
 @register_audio_embedder("speechbrain")
 class SpeechBrainEmbedder(_BaseAudioEmbedder):
-    """
-    ECAPA-TDNN speaker embeddings via SpeechBrain.
-    Model hub id: 'speechbrain/spkrec-ecapa-voxceleb'
-    This implementation avoids Windows symlink errors by NOT using `savedir`
-    (we point HF cache to .fait and load directly from there).
-    """
+    """ECAPA-TDNN speaker embeddings via SpeechBrain, Windows-safe (no symlinks)."""
 
     def __init__(
-        self,
-        model_id: str = "speechbrain/spkrec-ecapa-voxceleb",
-        embed_cache_dir: Optional[str] = None,
-        hf_home: Optional[str] = None,
-        sample_rate: int = 16000,
+            self,
+            model_id: str = "speechbrain/spkrec-ecapa-voxceleb",
+            cache_dir: str | None = None,
+            embed_cache_dir: str | None = None,
+            sample_rate: int = 16000,  # <-- keep this arg
     ):
         super().__init__(embed_cache_dir=embed_cache_dir)
-
         paths = get_paths()
+
         self.model_id = model_id
-        self.sample_rate = sample_rate
+        self.sample_rate = int(sample_rate)  # <-- **restore this line**
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Route Hugging Face cache under our project so it's offline-friendly
-        # and doesn't try to symlink into a custom savedir.
-        self.hf_home = hf_home or str(paths.models_cache / "audio" / "hf_home")
-        ensure_folder(self.hf_home)
-        os.environ.setdefault("HF_HOME", self.hf_home)
+        # keep your chosen cache location
+        self.cache_dir = cache_dir or str(paths.models_cache / "audio" / "speechbrain")
+        ensure_folder(self.cache_dir)
 
-        # CRITICAL: savedir=None prevents SpeechBrain from creating symlinks.
+        # load model (your existing loader logic is fine)
         self.clf = EncoderClassifier.from_hparams(
             source=self.model_id,
-            savedir=None,
+            savedir=self.cache_dir,
             run_opts={"device": self.device},
         )
         self.clf.eval()
 
-    # ---------- public API ----------
+    # ---- Embedding API ----
     def name(self) -> str:
-        return f"SpeechBrain({Path(self.model_id).name},{self.device})"
+        return f"SpeechBrain({Path(self.repo_dir).name}, {self.device})"
 
-    @property
-    def model_tag(self) -> str:
-        # short tag for cache keys; include model id tail to avoid collisions
-        return f"speechbrain_{Path(self.model_id).name}"
-
-    def embed_file(self, path: str, use_cache: bool = True) -> Optional[np.ndarray]:
-        base = self._cache_base(path)
-        if use_cache:
-            for ext in (".pkl", ".npy"):
-                p = base + ext
-                if os.path.exists(p):
-                    try:
-                        return load_embedding(p)
-                    except Exception:
-                        # fall through to recompute if cache read fails
-                        pass
-        try:
-            wav, sr = self._load_mono_16k(path)
-        except Exception:
-            return None
-        emb = self.embed_tensor(wav, sr)
-        try:
-            save_embedding(base, emb)
-        except Exception:
-            pass
-        return emb
-
-    def embed_tensor(self, wav: torch.Tensor, sr: int) -> np.ndarray:
-        """Accepts torch waveform [C,T] or [T]; returns L2-normalized emb (float32)."""
-        if wav.dim() == 1:
-            wav = wav.unsqueeze(0)
-        if wav.size(0) > 1:
-            wav = wav.mean(dim=0, keepdim=True)
-        if sr != self.sample_rate:
-            wav = Resample(sr, self.sample_rate)(wav)
-
+    def embed_wave(self, y: np.ndarray, sr: int) -> np.ndarray:
+        if sr != self.cfg.sample_rate:
+            y = librosa.resample(y, orig_sr=sr, target_sr=self.cfg.sample_rate)
+            sr = self.cfg.sample_rate
+        wav = torch.tensor(y, dtype=torch.float32, device=self.device).unsqueeze(0)  # (1, T)
         with torch.no_grad():
-            emb = self.clf.encode_batch(wav.to(self.device)).squeeze().cpu().numpy()
-        emb = emb / (np.linalg.norm(emb) + 1e-9)
-        return emb.astype(np.float32)
+            emb = self.clf.encode_batch(wav).squeeze(0).squeeze(0).cpu().numpy()
+        return emb.astype(np.float32, copy=False)
 
-    # ---------- helpers ----------
-    def _load_mono_16k(self, path: str) -> Tuple[torch.Tensor, int]:
-        """
-        Try torchaudio first (fast for WAV/FLAC/etc). If it fails (e.g., M4A),
-        use ffmpeg to convert to a temporary 16kHz mono WAV, then load.
-        """
-        try:
-            wav, sr = torchaudio.load(path)  # [C,T]
-        except Exception:
-            if ffmpegio is None:
-                raise
-            tmpdir = Path(tempfile.mkdtemp(prefix="audio_conv_"))
-            dst = tmpdir / (Path(path).stem + "_16k_mono.wav")
-            cmd = [
-                ffmpegio.get_ffmpeg_exe(), "-y", "-loglevel", "error",
-                "-i", path, "-ar", str(self.sample_rate), "-ac", "1", str(dst)
-            ]
-            subprocess.run(cmd, check=True)
-            wav, sr = torchaudio.load(str(dst))
+    def embed_file(self, audio_path: str, use_cache: bool = True) -> np.ndarray | None:
+        # load with fallback (handles .m4a)
+        wav, sr = load_audio_any(audio_path, sr=self.sample_rate, mono=True)
+        if wav.size == 0:
+            return None
 
-        if wav.size(0) > 1:
-            wav = wav.mean(dim=0, keepdim=True)
-        if sr != self.sample_rate:
-            wav = Resample(sr, self.sample_rate)(wav)
-
-        peak = wav.abs().max()
-        if float(peak) > 0:
-            wav = wav / peak.clamp(min=1e-9)
-        return wav, self.sample_rate
+        wav_t = torch.from_numpy(wav).unsqueeze(0).to(self.device)  # [1, T]
+        with torch.no_grad():
+            emb = self.clf.encode_batch(wav_t).squeeze(0).mean(dim=0).cpu().numpy()
+        return emb.astype(np.float32, copy=False)

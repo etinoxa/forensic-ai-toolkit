@@ -1,7 +1,7 @@
 # examples/object_screen_quickstart.py
 from __future__ import annotations
 
-import os, sys, pathlib, argparse, logging, uuid, warnings
+import os, sys, pathlib, argparse, logging, uuid, warnings, yaml
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -27,6 +27,22 @@ def resolve_gallery(p: str | None) -> str:
         return str((ROOT / "datasets" / "images" / "objects" / "raw").resolve())
     pp = pathlib.Path(p)
     return str((ROOT / p).resolve() if not pp.is_absolute() else pp.resolve())
+
+def apply_fusion_preset(cfg, yaml_path: str, preset: str):
+    data = yaml.safe_load(open(yaml_path, "r"))
+    params = data.get(preset) or {}
+    # shallow update is enough (all fields are scalars or dicts)
+    for k, v in params.items():
+        setattr(cfg.fusion, k, v)
+
+# ...
+cfg = ScreenConfig(
+    prompts=["person with weapon"],
+    gallery_dir="datasets/images/objects/raw",
+    # ... your other config ...
+)
+
+apply_fusion_preset(cfg, "configs/fusion.yaml", preset="weighted_60_40")
 
 
 def main() -> None:

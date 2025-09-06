@@ -58,3 +58,6 @@ imageio-ffmpeg
 
 #Database
 chromadb
+
+nemo_toolkit[asr]
+protobuf==5.28.3

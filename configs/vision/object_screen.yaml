@@ -29,7 +29,7 @@ fusion:
   gdino_only_default_tau: 0.60
   class_thresholds: {}
   borderline_window: 0
-  rule: weighted
+  rule: product
   alpha: 0.7
   tau_star: 0.60
   iou_gate: 0.40
