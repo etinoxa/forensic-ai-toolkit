@@ -1,0 +1,33 @@
+# config/audio/speaker_match.yaml
+reference_dir: datasets/audio/reference
+gallery_dir:  datasets/audio/gallery
+
+# Set all three to auto if you want .env to take over
+strategy: auto           # speechbrain_only | resemblyzer_only | two_stage | three_stage | detector_only | auto
+detector: auto           # resnet | wavlm | none | auto
+tertiary: auto           # resnet | wavlm | none | auto
+
+models:
+  speechbrain_id: speechbrain/spkrec-ecapa-voxceleb
+  titanet_id: nvidia/speakerverification_en_titanet_large
+  wavlm_id: microsoft/wavlm-base-plus
+
+thresholds: [0.75, 0.80, 0.85]
+
+single:
+  tau: 0.70
+
+two_stage:
+  method: weighted
+  alpha: 0.60
+  tau_star: 0.70
+
+three_stage:
+  method: weighted
+  alpha12: 0.60
+  alpha123: 0.60
+  tau_star: 0.70
+
+progress: log
+progress_every: 10
+use_cache: true
