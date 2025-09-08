@@ -1,9 +1,9 @@
 # src/fait/core/utils.py
 from __future__ import annotations
 from dataclasses import dataclass
-import os, re, io, json, hashlib, pickle
+import os, re, io, json, hashlib, pickle, math
 from pathlib import Path
-from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union
+from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union, Mapping
 import logging, json, time
 
 import numpy as np
@@ -433,6 +433,101 @@ class ProgressMeter:
             append_jsonl(self.log_path, {"event": "progress", **payload})
 
 
+# ───────────────────────────── Fusion ─────────────────────────────
+
+def _fcfg_get(cfg: Any, key: str, default: Any = None):
+    """Read attribute or mapping key from a config-ish object."""
+    if hasattr(cfg, key):
+        return getattr(cfg, key)
+    if isinstance(cfg, Mapping):
+        return cfg.get(key, default)
+    return default
+
+def _zscore(x: float, mean: Optional[float], std: Optional[float]) -> float:
+    if mean is None or std is None or std <= 0:
+        return x
+    return (x - mean) / std
+
+def _sigmoid(x: float) -> float:
+    # numerically stable sigmoid
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    else:
+        z = math.exp(x)
+        return z / (1.0 + z)
+
+def fuse_scores(
+    gscore: float,
+    cscore: float,
+    label: str,
+    fcfg: Any,
+) -> tuple[float, float, bool]:
+    """
+    Generic score-level fusion.
+    Returns: (fused_score, threshold_used, is_accept)
+
+    Supports fcfg fields (attr or mapping):
+      method: "and" | "weighted" | "sum" | "product" | "max" | "logistic"
+      alpha, tau_star
+      class_thresholds: dict
+      gdino_only_default_tau
+      gdino_mean, gdino_std, det_mean, det_std
+      w_g, w_c, b   (for "logistic")
+    """
+    method = (_fcfg_get(fcfg, "method", "and") or "and").lower()
+    alpha = float(_fcfg_get(fcfg, "alpha", 0.5))
+    tau_star = float(_fcfg_get(fcfg, "tau_star", 0.6))
+    class_thresholds = _fcfg_get(fcfg, "class_thresholds", {}) or {}
+    default_tau = float(_fcfg_get(fcfg, "gdino_only_default_tau", 0.5))
+
+    gdino_mean = _fcfg_get(fcfg, "gdino_mean", None)
+    gdino_std  = _fcfg_get(fcfg, "gdino_std",  None)
+    det_mean   = _fcfg_get(fcfg, "det_mean",   None)
+    det_std    = _fcfg_get(fcfg, "det_std",    None)
+
+    w_g = float(_fcfg_get(fcfg, "w_g", 1.0))
+    w_c = float(_fcfg_get(fcfg, "w_c", 1.0))
+    b   = float(_fcfg_get(fcfg, "b",   0.0))
+
+    class_tau = float(class_thresholds.get(label.lower(), default_tau))
+    tau = class_tau if method == "and" else tau_star
+
+    # optional z-norm for methods that combine the two scores
+    g = _zscore(gscore, gdino_mean, gdino_std)
+    c = _zscore(cscore, det_mean,   det_std)
+
+    if method == "and":
+        fused = min(gscore, cscore)        # report the bottleneck score
+        ok = (gscore >= class_tau) and (cscore >= class_tau)
+
+    elif method == "weighted":
+        fused = alpha * gscore + (1.0 - alpha) * cscore
+        ok = fused >= tau
+
+    elif method == "sum":
+        fused = g + c
+        ok = fused >= tau
+
+    elif method == "product":
+        fused = max(0.0, min(1.0, gscore * cscore))
+        ok = fused >= tau
+
+    elif method == "max":
+        fused = max(gscore, cscore)
+        ok = fused >= tau
+
+    elif method == "logistic":
+        fused = _sigmoid(w_g * g + w_c * c + b)
+        ok = fused >= tau
+
+    else:
+        # fallback to weighted
+        fused = alpha * gscore + (1.0 - alpha) * cscore
+        ok = fused >= tau
+
+    return float(fused), float(tau), bool(ok)
+
 
 # ───────────────────────────── Exports ─────────────────────────────
 
@@ -449,4 +544,6 @@ __all__ = [
     "plot_scores", "plot_distances", "plot_similarities", "write_report", "write_object_report",
     # Progress status
     "ProgressMeter",
+    # Fusion
+    "fuse_scores",
 ]
