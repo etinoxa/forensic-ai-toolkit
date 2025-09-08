@@ -30,6 +30,12 @@ einops
 pydantic
 python-dotenv
 
+#AUDIO
+speechbrain
+resemblyzer
+librosa
+soundfile
+imageio_ffmpeg
 
 # Other dependencies
 numpy
@@ -52,3 +58,6 @@ imageio-ffmpeg
 
 #Database
 chromadb
+
+nemo_toolkit[asr]
+protobuf==5.28.3
