@@ -1,18 +1,23 @@
+# src/fait/audio/embeddings/titanet_embedder.py
 from __future__ import annotations
-import os, shutil
+import os
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import torch
-import librosa
-import soundfile as sf
 from huggingface_hub import snapshot_download
 
 from fait.core.paths import get_paths
-from fait.core.utils import ensure_folder, cache_path, is_audio_file, load_audio_any
-from .base import _BaseAudioEmbedder
 from fait.core.registry import register_audio_embedder
+from fait.core.utils import (
+    ensure_folder,
+    cache_path,
+    load_numpy_safe,
+    save_numpy,
+    load_audio_any,
+)
+from .base import _BaseAudioEmbedder
 
 
 @register_audio_embedder("titanet")
@@ -20,10 +25,11 @@ class TitanetEmbedder(_BaseAudioEmbedder):
     """
     NVIDIA Titanet-Large speaker embeddings.
 
-    Defaults to Hugging Face repo 'nvidia/speakerverification_en_titanet_large'.
-    We avoid symlinks and copy files into <repo>/.fait/cache/models/audio/titanet.
-    Requires: nemo-toolkit >= 1.21 (nemo.collections.asr.models.EncDecSpeakerLabelModel)
+    - Repo: nvidia/speakerverification_en_titanet_large
+    - Loads from a local .nemo (downloaded via HF Hub without symlinks)
+    - Produces a single L2-normalized float32 embedding per file
     """
+
     def __init__(
         self,
         model_id: str = "nvidia/speakerverification_en_titanet_large",
@@ -33,110 +39,137 @@ class TitanetEmbedder(_BaseAudioEmbedder):
     ):
         super().__init__(embed_cache_dir=embed_cache_dir)
         paths = get_paths()
+
+        # Cache locations
+        self.model_id = model_id
         self.sample_rate = sample_rate
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Windows-safe: no symlinks
+        # Where the .nemo and related files will live
+        self.cache_root = Path(cache_dir or (paths.models_cache / "audio" / "titanet"))
+        self.repo_dir = self.cache_root / "repo"
+        ensure_folder(self.repo_dir)
+
+        # Avoid symlink warnings / behavior
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-        self.cache_root = Path(cache_dir or (paths.models_cache / "audio" / "titanet"))
-        ensure_folder(self.cache_root)
-
-        # 1) Pull the repo locally
-        repo_dir = self.cache_root / "repo"
-        ensure_folder(repo_dir)
+        # Download snapshot into a normal folder (no symlinks)
         snapshot_download(
-            repo_id=model_id,
-            local_dir=str(repo_dir),
+            repo_id=self.model_id,
+            local_dir=str(self.repo_dir),
             local_dir_use_symlinks=False,
         )
 
-        # .nemo file path (common layout)
-        nemo_candidates = list(repo_dir.glob("*.nemo"))
-        if not nemo_candidates:
+        # Locate the .nemo file
+        nemo_files = list(self.repo_dir.glob("*.nemo"))
+        if not nemo_files:
             raise RuntimeError(
-                f"No .nemo file found in {repo_dir}. Make sure the repo {model_id} "
-                "contains a NeMo checkpoint."
+                f"No .nemo checkpoint found in {self.repo_dir}. "
+                f"Repo '{self.model_id}' should contain a NeMo checkpoint."
             )
-        self.nemo_path = nemo_candidates[0]
-        self.model_id = model_id
+        nemo_path = nemo_files[0]
 
-        # 2) Load NeMo model
+        # Load NeMo model
         try:
             from nemo.collections.asr.models import EncDecSpeakerLabelModel
         except Exception as e:
             raise RuntimeError(
                 "NeMo is required for Titanet. Install with:\n"
-                "  pip install nemo_toolkit[asr]\n"
+                "  pip install 'nemo_toolkit[asr]'  \n"
+                "or in Docker image ensure nemo_toolkit is included."
             ) from e
 
         self.model = EncDecSpeakerLabelModel.restore_from(
-            restore_path=str(self.nemo_path),
+            restore_path=str(nemo_path),
             map_location=self.device,
         ).eval()
-        # Optional: fast inference + TF32
-        torch.backends.cuda.matmul.allow_tf32 = True
+
+        # A small tag for cache file naming (prevents cross-model collisions)
+        self._model_tag = "titanet"
+
+    # ---------- Public API ----------
 
     def name(self) -> str:
         return f"TitanetLarge({Path(self.model_id).name}, {self.device})"
 
-    def _load_audio(self, path: Path, target_sr: int) -> tuple[Optional[np.ndarray], Optional[int]]:
-        # Robust loader: try soundfile, then librosa
-        try:
-            y, sr = sf.read(str(path), always_2d=False)
-            if y.ndim > 1:
-                y = np.mean(y, axis=1)
-        except Exception:
-            try:
-                y, sr = librosa.load(str(path), sr=None, mono=True)
-            except Exception:
-                return None, None
+    def embed_file(self, audio_path: str, use_cache: bool = True) -> Optional[np.ndarray]:
+        """
+        Returns a single L2-normalized float32 vector or None on failure.
+        Caches to .npy using the standard cache_path/save_numpy helpers.
+        """
+        # Cache path (per-file, per-model)
+        base = cache_path(self.embed_cache_dir, audio_path, self._model_tag)
+        npy = base + ".npy"
 
-        if sr != target_sr:
-            y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
-            sr = target_sr
-        y = y.astype(np.float32, copy=False)
-        return y, sr
+        if use_cache:
+            arr = load_numpy_safe(npy)
+            if arr is not None:
+                return arr
 
-    # def embed_file(self, audio_path: str | Path, use_cache: bool = True) -> Optional[np.ndarray]:
-    #     audio_path = Path(audio_path)
-    #     if not audio_path.exists() or not is_audio_file(audio_path):
-    #         return None
-    #
-    #     base = cache_path(self.embed_cache_dir, audio_path, tag="titanet")
-    #     npy = Path(base).with_suffix(".npy")
-    #     if use_cache and npy.exists():
-    #         try:
-    #             return np.load(npy)
-    #         except Exception:
-    #             pass
-    #
-    #     wav, sr = self._load_audio(audio_path, target_sr=self.sample_rate)
-    #     if wav is None:
-    #         return None
-    #
-    #     wav_t = torch.from_numpy(wav).float().to(self.device).unsqueeze(0)
-    #     length_t = torch.tensor([wav_t.shape[1]], device=self.device).long()
-    #
-    #     with torch.inference_mode():
-    #         # NeMo API: get_embedding(audio_signal, length) -> (B, D) or (B, 1, D)
-    #         out = self.model.get_embedding(audio_signal=wav_t, length=length_t)
-    #         if isinstance(out, (list, tuple)):
-    #             emb = out[0]
-    #         else:
-    #             emb = out
-    #         emb = emb.squeeze().detach().cpu().numpy().astype(np.float32, copy=False)
-    #
-    #     npy.parent.mkdir(parents=True, exist_ok=True)
-    #     np.save(npy, emb)
-    #     return emb
-
-    def embed_file(self, audio_path: str, use_cache: bool = True) -> np.ndarray | None:
+        # Load audio (handles m4a/mp3/wav/flac via ffmpeg backend in utils)
         wav, sr = load_audio_any(audio_path, sr=self.sample_rate, mono=True)
-        if wav.size == 0:
+        if wav is None or wav.size == 0:
             return None
-        wav_t = torch.from_numpy(wav).to(self.device).unsqueeze(0)  # [1, T]
+
+        # Compute embedding
+        emb = self._embed_wav(wav, sr)
+        if emb is None:
+            return None
+
+        # Save cache and return
+        ensure_folder(Path(npy).parent)
+        save_numpy(npy, emb)
+        return emb
+
+    # ---------- Internals ----------
+
+    def _embed_wav(self, wav: np.ndarray, sr: int) -> Optional[np.ndarray]:
+        """
+        Core embedding path. Always passes input lengths to NeMo.
+        Normalizes the output to unit L2.
+        """
+        # NeMo expects float32 tensors
+        wav_t = torch.from_numpy(wav.astype(np.float32, copy=False)).to(self.device).unsqueeze(0)
+        len_t = torch.tensor([wav_t.shape[1]], dtype=torch.int64, device=self.device)
+
         with torch.no_grad():
-            out = self.model(wav_t)  # or appropriate forward
-            emb = out.squeeze(0).cpu().numpy()
-        return emb.astype(np.float32, copy=False)
+            # 1) Preferred API: get_embedding (exists on most NeMo speaker models)
+            if hasattr(self.model, "get_embedding"):
+                # Try with positional arguments only
+                try:
+                    emb_t = self.model.get_embedding(wav_t)
+                except Exception as e:
+                    # If that fails, try with both positional arguments
+                    try:
+                        emb_t = self.model.get_embedding(wav_t, len_t)
+                    except Exception:
+                        # If both fail, fall back to the original approach
+                        raise e
+
+                # Some versions return (emb, ) or time-major outputs → squeeze + pool if needed
+                if isinstance(emb_t, (tuple, list)):
+                    emb_t = emb_t[0]
+
+                if emb_t.dim() == 3:  # (B, T, C) or (B, C, T) → mean-pool over time
+                    if emb_t.shape[1] > emb_t.shape[2]:
+                        emb_t = emb_t.mean(dim=1)
+                    else:
+                        emb_t = emb_t.mean(dim=2)
+
+                emb_t = torch.nn.functional.normalize(emb_t, p=2, dim=-1)
+                return emb_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
+
+            # 2) Fallback: preprocessor -> encoder -> mean-pool
+            proc_sig, proc_len = self.model.preprocessor(input_signal=wav_t, length=len_t)
+            enc = self.model.encoder(audio_signal=proc_sig, length=proc_len)  # (B,T,C) or (B,C,T)
+
+            if enc.dim() == 3:
+                if enc.shape[1] > enc.shape[2]:
+                    emb_t = enc.mean(dim=1)
+                else:
+                    emb_t = enc.mean(dim=2)
+            else:
+                emb_t = enc
+
+            emb_t = torch.nn.functional.normalize(emb_t, p=2, dim=-1)
+            return emb_t.squeeze(0).detach().cpu().numpy().astype(np.float32)
