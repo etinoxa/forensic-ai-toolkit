@@ -1,18 +1,23 @@
+# src/fait/audio/embeddings/titanet_embedder.py
 from __future__ import annotations
-import os, shutil
+import os
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import torch
-import librosa
-import soundfile as sf
 from huggingface_hub import snapshot_download
 
 from fait.core.paths import get_paths
-from fait.core.utils import ensure_folder, cache_path, is_audio_file, load_audio_any
-from .base import _BaseAudioEmbedder
 from fait.core.registry import register_audio_embedder
+from fait.core.utils import (
+    ensure_folder,
+    cache_path,
+    load_numpy_safe,
+    save_numpy,
+    load_audio_any,
+)
+from .base import _BaseAudioEmbedder
 
 
 @register_audio_embedder("titanet")
@@ -20,10 +25,13 @@ class TitanetEmbedder(_BaseAudioEmbedder):
     """
     NVIDIA Titanet-Large speaker embeddings.
 
-    Defaults to Hugging Face repo 'nvidia/speakerverification_en_titanet_large'.
-    We avoid symlinks and copy files into <repo>/.fait/cache/models/audio/titanet.
-    Requires: nemo-toolkit >= 1.21 (nemo.collections.asr.models.EncDecSpeakerLabelModel)
+    Strategy:
+      - Download local snapshot (no symlinks).
+      - Restore NeMo model.
+      - Always use get_embedding(input_signal=..., input_signal_length=...).
+      - Reduce to (C,) and L2-normalize. No fixed-dim enforcement.
     """
+
     def __init__(
         self,
         model_id: str = "nvidia/speakerverification_en_titanet_large",
@@ -32,111 +40,155 @@ class TitanetEmbedder(_BaseAudioEmbedder):
         sample_rate: int = 16000,
     ):
         super().__init__(embed_cache_dir=embed_cache_dir)
+
         paths = get_paths()
+        self.model_id = model_id
         self.sample_rate = sample_rate
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Windows-safe: no symlinks
+        # Local snapshot (no symlinks)
+        self.cache_root = Path(cache_dir or (paths.models_cache / "audio" / "titanet"))
+        self.repo_dir = self.cache_root / "repo"
+        ensure_folder(self.repo_dir)
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-        self.cache_root = Path(cache_dir or (paths.models_cache / "audio" / "titanet"))
-        ensure_folder(self.cache_root)
-
-        # 1) Pull the repo locally
-        repo_dir = self.cache_root / "repo"
-        ensure_folder(repo_dir)
         snapshot_download(
-            repo_id=model_id,
-            local_dir=str(repo_dir),
+            repo_id=self.model_id,
+            local_dir=str(self.repo_dir),
             local_dir_use_symlinks=False,
         )
 
-        # .nemo file path (common layout)
-        nemo_candidates = list(repo_dir.glob("*.nemo"))
-        if not nemo_candidates:
+        nemo_files = list(self.repo_dir.glob("*.nemo"))
+        if not nemo_files:
             raise RuntimeError(
-                f"No .nemo file found in {repo_dir}. Make sure the repo {model_id} "
-                "contains a NeMo checkpoint."
+                f"No .nemo checkpoint found in {self.repo_dir} for {self.model_id}"
             )
-        self.nemo_path = nemo_candidates[0]
-        self.model_id = model_id
+        nemo_path = nemo_files[0]
 
-        # 2) Load NeMo model
         try:
             from nemo.collections.asr.models import EncDecSpeakerLabelModel
         except Exception as e:
             raise RuntimeError(
-                "NeMo is required for Titanet. Install with:\n"
-                "  pip install nemo_toolkit[asr]\n"
+                "NeMo is required for Titanet. Install e.g.\n"
+                "  pip install 'nemo_toolkit[asr]'"
             ) from e
 
         self.model = EncDecSpeakerLabelModel.restore_from(
-            restore_path=str(self.nemo_path),
+            restore_path=str(nemo_path),
             map_location=self.device,
         ).eval()
-        # Optional: fast inference + TF32
-        torch.backends.cuda.matmul.allow_tf32 = True
+
+        # A stable cache tag that won't fight old shapes
+        self._model_tag = "titanet.v6"  # constant; do not encode dim/variant
 
     def name(self) -> str:
         return f"TitanetLarge({Path(self.model_id).name}, {self.device})"
 
-    def _load_audio(self, path: Path, target_sr: int) -> tuple[Optional[np.ndarray], Optional[int]]:
-        # Robust loader: try soundfile, then librosa
-        try:
-            y, sr = sf.read(str(path), always_2d=False)
-            if y.ndim > 1:
-                y = np.mean(y, axis=1)
-        except Exception:
-            try:
-                y, sr = librosa.load(str(path), sr=None, mono=True)
-            except Exception:
-                return None, None
+    # ---------- public API ----------
 
-        if sr != target_sr:
-            y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
-            sr = target_sr
-        y = y.astype(np.float32, copy=False)
-        return y, sr
+    def embed_file(self, audio_path: str, use_cache: bool = True) -> Optional[np.ndarray]:
+        base = cache_path(self.embed_cache_dir, audio_path, self._model_tag)
+        npy = base + ".npy"
 
-    # def embed_file(self, audio_path: str | Path, use_cache: bool = True) -> Optional[np.ndarray]:
-    #     audio_path = Path(audio_path)
-    #     if not audio_path.exists() or not is_audio_file(audio_path):
-    #         return None
-    #
-    #     base = cache_path(self.embed_cache_dir, audio_path, tag="titanet")
-    #     npy = Path(base).with_suffix(".npy")
-    #     if use_cache and npy.exists():
-    #         try:
-    #             return np.load(npy)
-    #         except Exception:
-    #             pass
-    #
-    #     wav, sr = self._load_audio(audio_path, target_sr=self.sample_rate)
-    #     if wav is None:
-    #         return None
-    #
-    #     wav_t = torch.from_numpy(wav).float().to(self.device).unsqueeze(0)
-    #     length_t = torch.tensor([wav_t.shape[1]], device=self.device).long()
-    #
-    #     with torch.inference_mode():
-    #         # NeMo API: get_embedding(audio_signal, length) -> (B, D) or (B, 1, D)
-    #         out = self.model.get_embedding(audio_signal=wav_t, length=length_t)
-    #         if isinstance(out, (list, tuple)):
-    #             emb = out[0]
-    #         else:
-    #             emb = out
-    #         emb = emb.squeeze().detach().cpu().numpy().astype(np.float32, copy=False)
-    #
-    #     npy.parent.mkdir(parents=True, exist_ok=True)
-    #     np.save(npy, emb)
-    #     return emb
+        if use_cache:
+            arr = load_numpy_safe(npy)
+            if arr is not None:
+                return arr
 
-    def embed_file(self, audio_path: str, use_cache: bool = True) -> np.ndarray | None:
         wav, sr = load_audio_any(audio_path, sr=self.sample_rate, mono=True)
-        if wav.size == 0:
+        if wav is None or wav.size == 0:
             return None
-        wav_t = torch.from_numpy(wav).to(self.device).unsqueeze(0)  # [1, T]
-        with torch.no_grad():
-            out = self.model(wav_t)  # or appropriate forward
-            emb = out.squeeze(0).cpu().numpy()
-        return emb.astype(np.float32, copy=False)
+
+        emb = self._embed_wav(wav, sr)
+        if emb is None:
+            return None
+
+        ensure_folder(Path(npy).parent)
+        save_numpy(npy, emb)
+        return emb
+
+    # ---------- internals ----------
+
+    def _reduce_to_vector(self, t) -> torch.Tensor:
+        """
+        Reduce outputs to shape (C,), then L2-normalize.
+        Handles tensor/tuple/list/dict. Pools batch/time if necessary.
+        """
+        if isinstance(t, (list, tuple)):
+            t = t[0]
+        if isinstance(t, dict):
+            # prefer common keys
+            for k in ("embeddings", "embedding", "x", "out"):
+                if k in t:
+                    t = t[k]
+                    break
+
+        if not isinstance(t, torch.Tensor):
+            t = torch.as_tensor(t, device=self.device)
+
+        # Common cases:
+        #  (B, C)          -> (C)
+        #  (B, T, C)       -> mean over T -> (B, C) -> (C)
+        #  (B, C, T)       -> mean over T -> (B, C) -> (C)
+        #  Weird shapes    -> flatten -> (N,)
+        if t.dim() == 3:
+            # choose time dim heuristically (the larger of dim1/2)
+            time_dim = 1 if t.shape[1] >= t.shape[2] else 2
+            t = t.mean(dim=time_dim)  # -> (B, C)
+
+        if t.dim() == 2:
+            # pool batch if needed
+            if t.shape[0] > 1:
+                t = t.mean(dim=0)
+            else:
+                t = t[0]
+
+        if t.dim() != 1:
+            t = t.view(-1)
+
+        t = torch.nn.functional.normalize(t.float(), p=2, dim=0)
+        return t
+
+    @torch.inference_mode()
+    def _embed_wav(self, wav: np.ndarray, sr: int) -> Optional[np.ndarray]:
+        # The current NeMo get_embedding API expects file paths, not tensors
+        # Let's try to use the model's forward method directly
+
+        # Prepare input tensor
+        x = torch.from_numpy(wav.astype(np.float32, copy=False)).to(self.device).unsqueeze(0)
+        xlen = torch.tensor([x.shape[1]], dtype=torch.int64, device=self.device)
+
+        try:
+            # Try using the model's forward method directly
+            if hasattr(self.model, 'forward'):
+                out = self.model.forward(input_signal=x, input_signal_length=xlen)
+            else:
+                # Fallback to using get_embedding with temporary file
+                import tempfile
+                import soundfile as sf
+                import os
+
+                # Create a temporary file
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                    temp_path = temp_file.name
+
+                # Save audio to temporary file
+                sf.write(temp_path, wav, sr)
+
+                try:
+                    # Use NeMo's get_embedding method with file path
+                    out = self.model.get_embedding(temp_path)
+                finally:
+                    # Clean up temporary file
+                    os.unlink(temp_path)
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract embedding: {e}") from e
+
+        vec = self._reduce_to_vector(out)
+        if not torch.isfinite(vec).all():
+            return None
+
+        return vec.cpu().numpy().astype(np.float32)
+
+
