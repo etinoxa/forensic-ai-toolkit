@@ -10,11 +10,11 @@ onnxruntime
 ultralytics
 
 #OCR
-ipywidgets
-paddlepaddle
-paddleocr
-easyocr
-pytesseract
+#ipywidgets
+#paddlepaddle
+#paddleocr
+#easyocr
+#pytesseract
 
 #NLP
 transformers
@@ -32,7 +32,6 @@ python-dotenv
 
 #AUDIO
 speechbrain
-resemblyzer
 librosa
 soundfile
 imageio_ffmpeg
