@@ -10,11 +10,13 @@ onnxruntime
 ultralytics
 
 #OCR
-#ipywidgets
-#paddlepaddle
-#paddleocr
+
+paddlepaddle
+paddleocr
+rapidfuzz
 #easyocr
 #pytesseract
+ python-doct
 
 #NLP
 transformers
@@ -35,6 +37,9 @@ speechbrain
 librosa
 soundfile
 imageio_ffmpeg
+webrtcvad
+imageio
+
 
 # Other dependencies
 numpy
@@ -46,6 +51,10 @@ pandas
 ipywidgets
 ultralytics
 tensorflow
+typing-extensions
+einops
+rich
+
 
 
 #audio

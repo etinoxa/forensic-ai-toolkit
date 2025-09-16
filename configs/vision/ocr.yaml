@@ -1,0 +1,50 @@
+# configs/vision/ocr.yaml
+ocr:
+  # Paths (gallery_dir can be passed from quickstart/CLI)
+  gallery_dir: null
+  # If null: defaults to .fait/outputs/ocr/<timestamp>
+  output_dir: null
+
+  # Skips
+  min_file_kb: 10
+  min_dim_px: 100
+  rotations: [0, 90, 180, 270]
+
+  # Engines are tried in this order; pipeline stops on first non-empty text
+  engine_order: ["trocr", "donut", "tesseract", "paddleocr", "doctr"]
+
+  engines:
+    trocr:
+      enabled: true
+      lang: "auto"
+      model_id: "microsoft/trocr-base-printed"
+
+    donut:
+      enabled: true
+      lang: "auto"
+      model_id: "naver-clova-ix/donut-base"
+
+    tesseract:
+      enabled: true
+      lang: "eng"
+      tesseract_cmd: null    # e.g. "C:/Program Files/Tesseract-OCR/tesseract.exe"
+      psm: null              # e.g. "6"
+      oem: null              # e.g. "1"
+
+    paddleocr:
+      enabled: true
+      lang: "en"             # Paddle’s lang codes (e.g., "en", "ch")
+      # add other paddles args here if needed
+
+    doctr:
+      enabled: true
+      lang: "auto"
+      det_arch: "db_resnet50"
+      reco_arch: "crnn_vgg16_bn"
+
+  fusion:
+    strategy: "auto"         # first_nonempty | best_of | consensus | two_stage | auto
+    verifier: "auto"         # trocr | donut | tesseract | paddleocr | doctr | none | auto
+    alpha: 0.6               # for weighted score fusion
+    sim_tau: 0.70            # text-sim threshold for consensus/two_stage
+    prefer_confidence: true  # if ties, prefer engine with higher confidence

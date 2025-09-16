@@ -781,6 +781,34 @@ def fuse_scores(
     return float(fused), float(tau), bool(ok)
 
 
+def human_size(n_bytes: float | int, si: bool = False) -> str:
+    """
+    Convert a byte count into a human-friendly string.
+
+    si=False (default) -> binary units (KiB, MiB, ... 1024x)
+    si=True            -> decimal units (kB, MB, ... 1000x)
+
+    Examples:
+        human_size(1536)          -> "1.5 MiB"
+        human_size(1536, si=True) -> "1.5 MB"
+    """
+    try:
+        n = float(n_bytes)
+    except Exception:
+        return str(n_bytes)
+
+    base = 1000.0 if si else 1024.0
+    units = ["B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"] if si else \
+            ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"]
+
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+
+    for u in units:
+        if n < base or u == units[-1]:
+            return f"{sign}{n:0.1f} {u}"
+        n /= base
+
 # ───────────────────────────── Exports ─────────────────────────────
 
 __all__ = [
@@ -799,3 +827,5 @@ __all__ = [
     # Fusion
     "fuse_scores",
 ]
+
+
