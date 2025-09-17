@@ -23,6 +23,8 @@ from fait.vision.ocr.config import OcrConfig, FusionCfg, load_ocr_config, Engine
 # Engine factory (do NOT import the module named `engines` to avoid name clashes)
 from fait.vision.ocr.engines import get_engine
 
+
+
 import logging
 log = logging.getLogger("fait.vision.pipelines.ocr")
 
@@ -55,29 +57,24 @@ def _sanitize_engine_order(cfg: OcrConfig) -> List[str]:
 
 
 def _resolve_strategy_verifier(fu: FusionCfg) -> Tuple[str, str]:
-    """
-    ENV wins only if YAML says 'auto'.
-    Supports both FAIT_OCR_* and OCR_* env vars.
-    """
     strategy = (fu.strategy or "first_nonempty").lower()
     verifier = (fu.verifier or "none").lower()
 
-    # read both plain and FAIT_* envs
     env_s = (os.getenv("OCR_STRATEGY") or os.getenv("FAIT_OCR_STRATEGY") or "").strip().lower()
     env_v = (os.getenv("OCR_VERIFIER") or os.getenv("FAIT_OCR_VERIFIER") or "").strip().lower()
 
     allowed_strats = {
-        "first_nonempty", "best_of", "consensus", "two_stage",
-        "tesseract_only", "paddle_only", "trocr_only", "donut_only", "doctr_only",
+        "first_nonempty","best_of","consensus","two_stage",
+        "tesseract_only","paddle_only","trocr_only","donut_only","doctr_only",
     }
-    allowed_ver = {"trocr", "donut", "tesseract", "paddleocr", "doctr", "none"}
+    allowed_ver = {"trocr","donut","tesseract","paddleocr","doctr","none"}
 
-    if strategy == "auto" and env_s in allowed_strats:
+    # ENV ALWAYS WINS if valid
+    if env_s in allowed_strats:
         strategy = env_s
-    if verifier == "auto" and env_v in allowed_ver:
+    if env_v in allowed_ver:
         verifier = env_v
 
-    # clamp invalid combos (verifier only used by two_stage)
     if strategy != "two_stage":
         verifier = "none"
     return strategy, verifier
@@ -202,10 +199,6 @@ def run_ocr(cfg: OcrConfig) -> Dict:
     # Strategy/verifier resolution (ENV wins only when YAML=auto)
     strategy, verifier = _resolve_strategy_verifier(cfg.fusion)
 
-    # normalize *_only to a sequential policy and disable verifier
-    if strategy in _ONLY_MAP:
-        strategy = "first_nonempty"
-        verifier = "none"
 
     log.info("ocr:start", extra={
         "gallery": str(gallery_dir),
@@ -218,23 +211,30 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         "engine_order": cfg.engine_order,
     })
 
-    # Engine order (enabled only)
+    # Preserve the resolved value to decide pruning
+    resolved_strategy = strategy
+
+    # -------- engine order (enabled only) --------
     order = _sanitize_engine_order(cfg)
 
-    # If *_only selected, restrict to that single engine BEFORE any construction
-    sel = getattr(cfg, "fusion", None)
-    if sel and getattr(sel, "strategy", None) in _ONLY_MAP:
-        only = _ONLY_MAP[sel.strategy]
+    # If *_only selected (use the RESOLVED strategy), prune BEFORE any construction
+    if resolved_strategy in _ONLY_MAP:
+        only = _ONLY_MAP[resolved_strategy]
         if only not in cfg.engines:
-            # allow loose key like "paddleocr" → "paddle"
             for k in cfg.engines:
                 if k.lower().startswith(only):
                     only = k
                     break
         order = [only]
+        verifier = "none"  # any *_only ignores verifier
+        log.info("ocr:engine_order_resolved", extra={"order": order})
 
     if not order:
         raise RuntimeError("No OCR engines available/enabled after config filtering.")
+
+    # Now normalize the runtime policy after pruning
+    if resolved_strategy in _ONLY_MAP:
+        strategy = "first_nonempty"
 
     # --------- LAZY engine getter: create an engine only when it is used ---------
     _engines_cache: Dict[str, object] = {}
