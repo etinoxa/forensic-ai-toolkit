@@ -46,3 +46,20 @@ class TesseractEngine:
             return OcrResult(text=text, lang=self.lang, confidence=avg_conf, engine=self.name)
         except Exception:
             return None
+
+    def ocr(self, img: Image, lang: str = "auto") -> OcrResult | None:
+        """
+        OCR interface wrapper for compatibility with the pipeline.
+        Uses the engine's configured language unless overridden.
+        """
+        # Use provided language if different from configured
+        if lang != "auto" and lang != self.lang:
+            # Create a temporary instance with the requested language
+            temp_engine = TesseractEngine(
+                lang=lang, 
+                tesseract_cmd=getattr(self._pt.pytesseract, 'tesseract_cmd', None),
+                psm=self._psm,
+                oem=self._oem
+            )
+            return temp_engine.recognize(img)
+        return self.recognize(img)

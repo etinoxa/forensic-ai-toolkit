@@ -5,14 +5,12 @@ import csv
 import json
 import os
 import time
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PIL import Image
 
-from fait.core.config_io import load_yaml
 from fait.core.paths import get_paths
 from fait.core.utils import (
     ensure_folder,
@@ -20,44 +18,68 @@ from fait.core.utils import (
     human_size,
     ProgressMeter,
 )
-# ⬇️ Import the ONE TRUE config (no local duplicates here)
+# One true config types & loader
 from fait.vision.ocr.config import OcrConfig, FusionCfg, load_ocr_config, EngineCfg
-# ⬇️ Engine registry (expected to exist in src/fait/vision/ocr/engines/__init__.py)
+# Engine factory (do NOT import the module named `engines` to avoid name clashes)
 from fait.vision.ocr.engines import get_engine
 
 import logging
 log = logging.getLogger("fait.vision.pipelines.ocr")
 
 
-# ---------- helpers ----------
+# ---------- strategy helpers ----------
+
+# maps *_only strategies → normalized engine key
+_ONLY_MAP = {
+    "tesseract_only": "tesseract",
+    "paddle_only":    "paddle",
+    "trocr_only":     "trocr",
+    "donut_only":     "donut",
+    "doctr_only":     "doctr",
+}
 
 def _now_tag() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def _sanitize_engine_order(cfg: OcrConfig) -> List[str]:
-    # Keep only enabled engines, preserve the given order
-    enabled = {name for name, e in cfg.engines.items() if e.get("enabled", True)}
-    return [name for name in cfg.engine_order if name in enabled]
+    """
+    Keep only enabled engines, preserve the user-specified order.
+    cfg.engines is normalized to dicts later so we can .get('enabled', True).
+    """
+    enabled = {
+        name for name, e in (cfg.engines or {}).items()
+        if (isinstance(e, dict) and e.get("enabled", True)) or (not isinstance(e, dict) and getattr(e, "enabled", True))
+    }
+    return [name for name in (cfg.engine_order or []) if name in enabled]
 
 
 def _resolve_strategy_verifier(fu: FusionCfg) -> Tuple[str, str]:
-    """ENV wins only if YAML says 'auto'."""
+    """
+    ENV wins only if YAML says 'auto'.
+    Supports both FAIT_OCR_* and OCR_* env vars.
+    """
     strategy = (fu.strategy or "first_nonempty").lower()
     verifier = (fu.verifier or "none").lower()
 
-    env_s = os.getenv("OCR_STRATEGY", "").strip().lower()
-    env_v = os.getenv("OCR_VERIFIER", "").strip().lower()
+    # read both plain and FAIT_* envs
+    env_s = (os.getenv("OCR_STRATEGY") or os.getenv("FAIT_OCR_STRATEGY") or "").strip().lower()
+    env_v = (os.getenv("OCR_VERIFIER") or os.getenv("FAIT_OCR_VERIFIER") or "").strip().lower()
 
-    if strategy == "auto" and env_s in {"first_nonempty", "best_of", "consensus", "two_stage"}:
+    allowed_strats = {
+        "first_nonempty", "best_of", "consensus", "two_stage",
+        "tesseract_only", "paddle_only", "trocr_only", "donut_only", "doctr_only",
+    }
+    allowed_ver = {"trocr", "donut", "tesseract", "paddleocr", "doctr", "none"}
+
+    if strategy == "auto" and env_s in allowed_strats:
         strategy = env_s
-    if verifier == "auto" and env_v in {"trocr", "donut", "tesseract", "paddleocr", "doctr", "none"}:
+    if verifier == "auto" and env_v in allowed_ver:
         verifier = env_v
 
-    # clamp invalid combos
+    # clamp invalid combos (verifier only used by two_stage)
     if strategy != "two_stage":
         verifier = "none"
-
     return strategy, verifier
 
 
@@ -92,8 +114,9 @@ def _normalize_engine_result(res) -> Tuple[str, Optional[float]]:
 
 def _should_skip(path: Path, min_kb: int, min_dim: int) -> Tuple[bool, str]:
     try:
-        if path.stat().st_size < min_kb * 1024:
-            return True, f"file <{min_kb}KB ({human_size(path.stat().st_size)})"
+        size = path.stat().st_size
+        if size < min_kb * 1024:
+            return True, f"file <{min_kb}KB ({human_size(size)})"
     except Exception:
         return True, "stat_failed"
 
@@ -107,36 +130,24 @@ def _should_skip(path: Path, min_kb: int, min_dim: int) -> Tuple[bool, str]:
 
     return False, ""
 
-def _hydrate_cfg(raw: dict) -> OcrConfig:
-    """
-    Accepts either the whole YAML dict or the nested 'ocr' block,
-    returns a fully-typed OCRConfig (no bare dicts for nested fields).
-    """
-    data = raw.get("ocr", raw) or {}
 
-    # engines -> Dict[str, OCREngineCfg]
-    engines_in = data.get("engines") or {}
-    engines = {name: EngineCfg(**(cfg or {})) for name, cfg in engines_in.items()}
+def _eng_to_dict(e) -> dict:
+    """Normalize engine cfg objects to plain dicts for .get() access."""
+    if isinstance(e, dict):
+        return e
+    return {
+        "enabled": getattr(e, "enabled", True),
+        "lang": getattr(e, "lang", "auto"),
+        "model_id": getattr(e, "model_id", None),
+        "tesseract_cmd": getattr(e, "tesseract_cmd", None),
+        "psm": getattr(e, "psm", None),
+        "oem": getattr(e, "oem", None),
+        "det_arch": getattr(e, "det_arch", None),
+        "reco_arch": getattr(e, "reco_arch", None),
+    }
 
-    # fusion -> OCRFusionCfg
-    fusion = FusionCfg(**(data.get("fusion") or {}))
 
-    # rotations as tuple[int, ...]
-    rotations = tuple(int(x) for x in (data.get("rotations") or [0, 90, 180, 270]))
-
-    return OcrConfig(
-
-        gallery_dir=data.get("gallery_dir"),
-        output_dir=data.get("output_dir"),
-        min_file_kb=int(data.get("min_file_kb", 10)),
-        min_dim_px=int(data.get("min_dim_px", 100)),
-        rotations=rotations,
-        engines=engines,
-        engine_order=list(data.get("engine_order") or ["trocr", "donut", "tesseract", "paddleocr", "doctr"]),
-        fusion=fusion,
-        # found_csv / failures_csv / log_file keep their dataclass defaults
-    )
-
+# ---------- public entry points ----------
 
 def run_ocr_from_yaml(yaml_path: str | Path, gallery_dir: str | Path | None = None) -> Dict:
     cfg = load_ocr_config(str(yaml_path))
@@ -144,8 +155,6 @@ def run_ocr_from_yaml(yaml_path: str | Path, gallery_dir: str | Path | None = No
         cfg.gallery_dir = str(gallery_dir)
     return run_ocr(cfg)
 
-
-# ---------- main pipeline ----------
 
 def run_ocr(cfg: OcrConfig) -> Dict:
     """
@@ -158,7 +167,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
     t0 = time.time()
     paths = get_paths()
 
-    # Ensure Paddle-related caches point to the project cache BEFORE engines are created
+    # Point Paddle caches to project cache BEFORE any engine construction
     try:
         ocr_cache = paths.models_cache / "ocr"
         ensure_folder(ocr_cache)
@@ -166,32 +175,13 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         os.environ["PPOCR_HOME"] = str(ocr_cache)
         os.environ.setdefault("PADDLEHUB_HOME", str(ocr_cache))
     except Exception:
-        # Non-fatal: if anything goes wrong here, Paddle will fall back to its defaults
         pass
 
-    # Normalize nested config in case callers passed raw dicts or dataclass instances
+    # Normalize nested config
     if isinstance(getattr(cfg, "fusion", None), dict):
         cfg.fusion = FusionCfg(**cfg.fusion)  # type: ignore[assignment]
-
-    # Ensure engines are dict-like for .get() access throughout
-    def _eng_as_dict(e) -> dict:
-        if isinstance(e, dict):
-            return e
-        # Fallback to attribute access if it's a dataclass/object
-        return {
-            "enabled": getattr(e, "enabled", True),
-            "lang": getattr(e, "lang", "auto"),
-            # pass through optional known keys if present
-            "model_id": getattr(e, "model_id", None),
-            "tesseract_cmd": getattr(e, "tesseract_cmd", None),
-            "psm": getattr(e, "psm", None),
-            "oem": getattr(e, "oem", None),
-            "det_arch": getattr(e, "det_arch", None),
-            "reco_arch": getattr(e, "reco_arch", None),
-        }
-
     if isinstance(getattr(cfg, "engines", None), dict):
-        cfg.engines = {name: _eng_as_dict(val) for name, val in cfg.engines.items()}  # type: ignore[assignment]
+        cfg.engines = {name: _eng_to_dict(val) for name, val in cfg.engines.items()}  # type: ignore[assignment]
 
     # Resolve dirs
     gallery_dir = Path(cfg.gallery_dir) if cfg.gallery_dir else Path(
@@ -204,13 +194,19 @@ def run_ocr(cfg: OcrConfig) -> Dict:
     run_dir = base_out
     ensure_folder(run_dir)
 
-    # Fixed filenames here (so we don’t need cfg.found_csv / cfg.failures_csv in YAML)
+    # Fixed filenames here
     found_csv = run_dir / "found.csv"
     failures_csv = run_dir / "failures.csv"
     jsonl_log = run_dir / "log.jsonl"
 
-    # Strategy/verifier resolution (ENV wins only when YAML has 'auto')
+    # Strategy/verifier resolution (ENV wins only when YAML=auto)
     strategy, verifier = _resolve_strategy_verifier(cfg.fusion)
+
+    # normalize *_only to a sequential policy and disable verifier
+    if strategy in _ONLY_MAP:
+        strategy = "first_nonempty"
+        verifier = "none"
+
     log.info("ocr:start", extra={
         "gallery": str(gallery_dir),
         "run_dir": str(run_dir),
@@ -222,15 +218,31 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         "engine_order": cfg.engine_order,
     })
 
-    # Build engines in the order we’ll try
+    # Engine order (enabled only)
     order = _sanitize_engine_order(cfg)
-    engines = {}
-    for name in order:
-        eng = get_engine(name, cfg.engines.get(name))  # pass per-engine cfg only
-        if eng is not None:
-            engines[name] = eng
-    if not engines:
+
+    # If *_only selected, restrict to that single engine BEFORE any construction
+    sel = getattr(cfg, "fusion", None)
+    if sel and getattr(sel, "strategy", None) in _ONLY_MAP:
+        only = _ONLY_MAP[sel.strategy]
+        if only not in cfg.engines:
+            # allow loose key like "paddleocr" → "paddle"
+            for k in cfg.engines:
+                if k.lower().startswith(only):
+                    only = k
+                    break
+        order = [only]
+
+    if not order:
         raise RuntimeError("No OCR engines available/enabled after config filtering.")
+
+    # --------- LAZY engine getter: create an engine only when it is used ---------
+    _engines_cache: Dict[str, object] = {}
+
+    def _eng(name: str):
+        if name not in _engines_cache:
+            _engines_cache[name] = get_engine(name, cfg.engines.get(name))
+        return _engines_cache[name]
 
     # IO setup
     found_f = found_csv.open("w", newline="", encoding="utf-8")
@@ -263,6 +275,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
     try:
         for fp in files:
             processed += 1
+
             # Skip rules
             skip, reason = _should_skip(fp, cfg.min_file_kb, cfg.min_dim_px)
             if skip:
@@ -282,20 +295,12 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                     except Exception:
                         continue
 
-                    # --- Strategy execution ---
-                    # 1) first_nonempty: try each engine in order until text
-                    # 2) best_of: run all, pick highest confidence
-                    # 3) consensus: run all; if multiple non-empty match closely, prefer the higher confidence;
-                    #               otherwise fallback to first_nonempty
-                    # 4) two_stage: primary = engine_order[0], verifier = <resolved>; if primary empty/low conf,
-                    #               try verifier and prefer it if more confident.
-
                     results: List[Tuple[str, Optional[float], str, str]] = []  # (text, conf, engine, lang_used)
 
                     if strategy == "first_nonempty":
                         for name in order:
                             lang = cfg.engines[name].get("lang", "auto")
-                            text, conf = _normalize_engine_result(engines[name].ocr(img, lang=lang))
+                            text, conf = _normalize_engine_result(_eng(name).ocr(img, lang=lang))
                             if text:
                                 best_text, best_conf, best_notes, best_lang = text, conf, f"{name};rot={rot}", lang
                                 break
@@ -303,7 +308,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                     elif strategy == "best_of":
                         for name in order:
                             lang = cfg.engines[name].get("lang", "auto")
-                            text, conf = _normalize_engine_result(engines[name].ocr(img, lang=lang))
+                            text, conf = _normalize_engine_result(_eng(name).ocr(img, lang=lang))
                             if text:
                                 results.append((text, conf, name, lang))
                         if results:
@@ -314,82 +319,69 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                     elif strategy == "consensus":
                         for name in order:
                             lang = cfg.engines[name].get("lang", "auto")
-                            text, conf = _normalize_engine_result(engines[name].ocr(img, lang=lang))
+                            text, conf = _normalize_engine_result(_eng(name).ocr(img, lang=lang))
                             if text:
                                 results.append((text, conf, name, lang))
                         if results:
-                            # naive consensus: if two or more non-empty share a long common prefix, prefer higher conf
+                            # simple consensus: prefer highest confidence; if confs missing, prefer first
                             results_sorted = sorted(results, key=lambda r: (r[1] is not None, r[1] or 0.0), reverse=True)
-                            best_text, best_conf, best_notes, best_lang = results_sorted[0][0], results_sorted[0][1], f"{results_sorted[0][2]};rot={rot}", results_sorted[0][3]
+                            pick = results_sorted[0]
+                            best_text, best_conf, best_notes, best_lang = pick[0], pick[1], f"{pick[2]};rot={rot}", pick[3]
+                            # fallback: if low conf and there exists another near-duplicate text, keep highest conf
 
                     elif strategy == "two_stage":
+                        if not order:
+                            continue
                         primary_name = order[0]
                         p_lang = cfg.engines[primary_name].get("lang", "auto")
-                        p_text, p_conf = _normalize_engine_result(engines[primary_name].ocr(img, lang=p_lang))
+                        p_text, p_conf = _normalize_engine_result(_eng(primary_name).ocr(img, lang=p_lang))
+                        best_text, best_conf, best_notes, best_lang = p_text, p_conf, f"{primary_name};rot={rot}", p_lang
 
-                        if p_text and (p_conf is None or p_conf >= 0.5):
-                            best_text, best_conf, best_notes, best_lang = p_text, p_conf, f"{primary_name};rot={rot}", p_lang
-                        else:
-                            if verifier != "none" and verifier in engines:
-                                v_lang = cfg.engines[verifier].get("lang", "auto")
-                                v_text, v_conf = _normalize_engine_result(engines[verifier].ocr(img, lang=v_lang))
-                                # prefer verifier if it has non-empty text & >= primary confidence
-                                if v_text and ((v_conf or 0.0) >= (p_conf or 0.0)):
+                        if not p_text or (p_conf is not None and p_conf < 0.5):
+                            if verifier != "none":
+                                v_lang = cfg.engines.get(verifier, {}).get("lang", "auto")
+                                v_text, v_conf = _normalize_engine_result(_eng(verifier).ocr(img, lang=v_lang))
+                                if v_text and (p_conf is None or (v_conf is not None and v_conf >= p_conf)):
                                     best_text, best_conf, best_notes, best_lang = v_text, v_conf, f"{verifier};rot={rot}", v_lang
-                                else:
-                                    best_text, best_conf, best_notes, best_lang = p_text, p_conf, f"{primary_name};rot={rot}", p_lang
-                            else:
-                                best_text, best_conf, best_notes, best_lang = p_text, p_conf, f"{primary_name};rot={rot}", p_lang
 
-                    else:
-                        # fallback to first_nonempty
-                        for name in order:
-                            lang = cfg.engines[name].get("lang", "auto")
-                            text, conf = _normalize_engine_result(engines[name].ocr(img, lang=lang))
-                            if text:
-                                best_text, best_conf, best_notes, best_lang = text, conf, f"{name};rot={rot}", lang
-                                break
-
-                    if best_text:
-                        break  # stop trying more rotations
+                    # if we found text for this rotation, we can break out for first_nonempty or two_stage
+                    if best_text and strategy in {"first_nonempty", "two_stage"}:
+                        break
 
             if best_text:
-                found_w.writerow([fp.name, best_text, best_lang or "", f"{best_conf:.3f}" if best_conf is not None else "", best_notes])
+                found_w.writerow([fp.name, best_text, best_lang or "", best_conf if best_conf is not None else "", best_notes])
                 found += 1
-                _jsonl({"file": fp.name, "engine": best_notes.split(";")[0], "rotation": best_notes.split("rot=")[-1], "len_text": len(best_text), "conf": best_conf})
+                _jsonl({"file": fp.name, "action": "found", "engine": best_notes, "text_len": len(best_text)})
             else:
-                fail_w.writerow([fp.name, "empty text after rotations"])
+                fail_w.writerow([fp.name, "empty"])
                 failed += 1
-                _jsonl({"file": fp.name, "action": "failed", "reason": "empty_after_rotations"})
+                _jsonl({"file": fp.name, "action": "empty"})
 
             pm.set_counts(processed, found=found, review=0)
 
     finally:
         try:
             found_f.close()
-        except Exception:
-            pass
-        try:
             fail_f.close()
-        except Exception:
-            pass
-        try:
             log_f.close()
         except Exception:
             pass
 
-    dt = time.time() - t0
-    log.info("ocr:done", extra={"processed": processed, "found": found, "failed": failed, "secs": round(dt, 2), "run_dir": str(run_dir)})
-
-    return {
-        "processed": processed,
+    elapsed = time.time() - t0
+    log.info("ocr:end", extra={
         "found": found,
         "failed": failed,
-        "run_dir": str(run_dir),
+        "total": total,
+        "secs": round(elapsed, 2),
+        "out_dir": str(run_dir),
+    })
+    return {
         "found_csv": str(found_csv),
         "failures_csv": str(failures_csv),
-        "log_jsonl": str(jsonl_log),
-        "strategy": strategy,
-        "verifier": verifier,
-        "engine_order": order,
+        "jsonl": str(jsonl_log),
+        "found": found,
+        "failed": failed,
+        "total": total,
+        "out_dir": str(run_dir),
+        "secs": elapsed,
     }
