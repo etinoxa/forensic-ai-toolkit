@@ -8,7 +8,7 @@ ocr:
   # Skips
   min_file_kb: 10
   min_dim_px: 100
-  rotations: [0, 90, 180, 270]
+  rotations: [0]
 
   # Engines are tried in this order; pipeline stops on first non-empty text
   engine_order: ["trocr", "donut", "tesseract", "paddleocr", "doctr"]

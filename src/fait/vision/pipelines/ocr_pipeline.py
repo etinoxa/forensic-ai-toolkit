@@ -300,6 +300,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                     if strategy == "first_nonempty":
                         for name in order:
                             lang = cfg.engines[name].get("lang", "auto")
+                            log.info("ocr:call", extra={"engine": name, "rot": rot, "lang": lang})
                             text, conf = _normalize_engine_result(_eng(name).ocr(img, lang=lang))
                             if text:
                                 best_text, best_conf, best_notes, best_lang = text, conf, f"{name};rot={rot}", lang
@@ -381,6 +382,8 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         "jsonl": str(jsonl_log),
         "found": found,
         "failed": failed,
+        "processed": processed,
+        "failures": failed,
         "total": total,
         "out_dir": str(run_dir),
         "secs": elapsed,

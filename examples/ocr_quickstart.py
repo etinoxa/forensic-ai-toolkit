@@ -44,7 +44,7 @@ def main():
     print("Processed :", out["processed"])
     print("Found     :", out["found"])
     print("Failed    :", out["failures"])
-    print("Run dir   :", out["run_dir"])
+    print("Run dir   :", out["out_dir"])
     print("found.csv :", out["found_csv"])
     print("failures  :", out["failures_csv"])
 
