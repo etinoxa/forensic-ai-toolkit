@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 from PIL import Image
 
 from fait.core.paths import get_paths
@@ -17,6 +18,9 @@ from fait.core.utils import (
     is_image_file,
     human_size,
     ProgressMeter,
+    resolve_strategy_verifier,
+    resolve_engine_order,
+    write_report_ocr,
 )
 # One true config types & loader
 from fait.vision.ocr.config import OcrConfig, FusionCfg, load_ocr_config, EngineCfg
@@ -42,43 +46,6 @@ _ONLY_MAP = {
 
 def _now_tag() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
-
-
-def _sanitize_engine_order(cfg: OcrConfig) -> List[str]:
-    """
-    Keep only enabled engines, preserve the user-specified order.
-    cfg.engines is normalized to dicts later so we can .get('enabled', True).
-    """
-    enabled = {
-        name for name, e in (cfg.engines or {}).items()
-        if (isinstance(e, dict) and e.get("enabled", True)) or (not isinstance(e, dict) and getattr(e, "enabled", True))
-    }
-    return [name for name in (cfg.engine_order or []) if name in enabled]
-
-
-def _resolve_strategy_verifier(fu: FusionCfg) -> Tuple[str, str]:
-    strategy = (fu.strategy or "first_nonempty").lower()
-    verifier = (fu.verifier or "none").lower()
-
-    env_s = (os.getenv("OCR_STRATEGY") or os.getenv("FAIT_OCR_STRATEGY") or "").strip().lower()
-    env_v = (os.getenv("OCR_VERIFIER") or os.getenv("FAIT_OCR_VERIFIER") or "").strip().lower()
-
-    allowed_strats = {
-        "first_nonempty","best_of","consensus","two_stage",
-        "tesseract_only","paddle_only","trocr_only","donut_only","doctr_only",
-    }
-    allowed_ver = {"trocr","donut","tesseract","paddleocr","doctr","none"}
-
-    # ENV ALWAYS WINS if valid
-    if env_s in allowed_strats:
-        strategy = env_s
-    if env_v in allowed_ver:
-        verifier = env_v
-
-    if strategy != "two_stage":
-        verifier = "none"
-    return strategy, verifier
-
 
 def _avg_conf(conf) -> Optional[float]:
     if conf is None:
@@ -180,6 +147,14 @@ def run_ocr(cfg: OcrConfig) -> Dict:
     if isinstance(getattr(cfg, "engines", None), dict):
         cfg.engines = {name: _eng_to_dict(val) for name, val in cfg.engines.items()}  # type: ignore[assignment]
 
+    # --- normalize engine-name aliases (so YAML can say 'paddleocr', 'donot', etc.) ---
+    _alias = {"paddleocr": "paddle", "donot": "donut"}
+    cfg.engines = {_alias.get(k.lower(), k.lower()): v for k, v in (cfg.engines or {}).items()}
+
+    # If YAML specified engine_order with aliases, normalize that too
+    if getattr(cfg, "engine_order", None):
+        cfg.engine_order = [_alias.get(x.lower(), x.lower()) for x in cfg.engine_order]
+
     # Resolve dirs
     gallery_dir = Path(cfg.gallery_dir) if cfg.gallery_dir else Path(
         os.getenv("OCR_GALLERY_DIR", paths.repo_root / "datasets/images/text_ocr")
@@ -187,19 +162,35 @@ def run_ocr(cfg: OcrConfig) -> Dict:
     if not gallery_dir.exists():
         raise FileNotFoundError(f"Gallery not found: {gallery_dir}")
 
-    base_out = Path(cfg.output_dir) if cfg.output_dir else (paths.outputs / "ocr" / _now_tag())
-    run_dir = base_out
-    ensure_folder(run_dir)
+    # Strategy/verifier resolution (ENV wins only when YAML=auto)
+    strategy, verifier = resolve_strategy_verifier(cfg.fusion)
+    # -------- engine order (enabled only) --------
+    order = resolve_engine_order(cfg, strategy)
+    if not order:
+        raise RuntimeError("No OCR engines available/enabled after config filtering.")
 
-    # Fixed filenames here
+    enabled = [k for k, v in (cfg.engines or {}).items() if v.get("enabled", True)]
+    log.info("%s %s", "ocr:engines_enabled", json.dumps({
+        "enabled": enabled,
+        "strategy": strategy,
+        "verifier": verifier,
+        "order": order,
+    }))
+
+    run_dir, _ = write_report_ocr(
+        paths.outputs,
+        strategy=strategy,
+        engines=order,
+        verifier=verifier,
+        counts={"processed": 0, "found": 0, "review": 0},
+    )
+
+    # Now set fixed file paths inside that folder
     found_csv = run_dir / "found.csv"
     failures_csv = run_dir / "failures.csv"
     jsonl_log = run_dir / "log.jsonl"
 
-    # Strategy/verifier resolution (ENV wins only when YAML=auto)
-    strategy, verifier = _resolve_strategy_verifier(cfg.fusion)
-
-
+    # Start log (now we know run_dir)
     log.info("ocr:start", extra={
         "gallery": str(gallery_dir),
         "run_dir": str(run_dir),
@@ -211,31 +202,6 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         "engine_order": cfg.engine_order,
     })
 
-    # Preserve the resolved value to decide pruning
-    resolved_strategy = strategy
-
-    # -------- engine order (enabled only) --------
-    order = _sanitize_engine_order(cfg)
-
-    # If *_only selected (use the RESOLVED strategy), prune BEFORE any construction
-    if resolved_strategy in _ONLY_MAP:
-        only = _ONLY_MAP[resolved_strategy]
-        if only not in cfg.engines:
-            for k in cfg.engines:
-                if k.lower().startswith(only):
-                    only = k
-                    break
-        order = [only]
-        verifier = "none"  # any *_only ignores verifier
-        log.info("ocr:engine_order_resolved", extra={"order": order})
-
-    if not order:
-        raise RuntimeError("No OCR engines available/enabled after config filtering.")
-
-    # Now normalize the runtime policy after pruning
-    if resolved_strategy in _ONLY_MAP:
-        strategy = "first_nonempty"
-
     # --------- LAZY engine getter: create an engine only when it is used ---------
     _engines_cache: Dict[str, object] = {}
 
@@ -243,6 +209,87 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         if name not in _engines_cache:
             _engines_cache[name] = get_engine(name, cfg.engines.get(name))
         return _engines_cache[name]
+
+    # ------------- strategies -------------
+    allowed_verifiers_ts = {"tesseract", "trocr", "doctr", "donut"}  # two_stage
+    allowed_verifiers_det = {"paddle", "tesseract", "trocr", "doctr", "donut"}  # detector_only
+
+    def _run_two_stage(img):
+        # primary: Paddle (required)
+        primary = "paddle"
+        if primary not in cfg.engines or not cfg.engines.get(primary, {}).get("enabled", True):
+            raise RuntimeError("two_stage requires Paddle (primary) enabled.")
+        if verifier not in allowed_verifiers_ts:
+            raise RuntimeError(f"two_stage verifier must be one of {sorted(allowed_verifiers_ts)}; got {verifier!r}")
+
+        # derive langs from engine configs (fallback to 'auto')
+        lang_primary = cfg.engines.get(primary, {}).get("lang", "auto")
+        lang_verifier = cfg.engines.get(verifier, {}).get("lang", "auto")
+
+        # 1) Paddle first
+        p = _eng(primary).ocr(img, lang=lang_primary)
+        p_text, p_conf = _normalize_engine_result(p)
+
+        # 2) Verifier tries to beat it
+        v = _eng(verifier).ocr(img, lang=lang_verifier)
+        v_text, v_conf = _normalize_engine_result(v)
+
+        # prefer verifier if it produced text; else fallback to paddle
+        return (v_text, v_conf) if v_text else (p_text, p_conf)
+
+    def _run_detector_only(img):
+        # detection with Paddle; recognition with chosen verifier (can be paddle itself)
+        if verifier not in allowed_verifiers_det:
+            raise RuntimeError(
+                f"detector_only verifier must be one of {sorted(allowed_verifiers_det)}; got {verifier!r}")
+        if "paddle" not in cfg.engines or not cfg.engines.get("paddle", {}).get("enabled", True):
+            raise RuntimeError("detector_only requires Paddle (detector) enabled.")
+
+        # 1) detect
+        det = _eng("paddle")
+        detect_fn = getattr(det, "detect", None)
+        if not callable(detect_fn):
+            # last-resort fallback: try to pull boxes from Paddle’s det-only path inline
+            # (keeps pipeline alive even if wrapper wasn’t updated)
+            from numpy import array
+            im = array(img.convert("RGB"))
+            raw = det.ocr(im, det=True, rec=False, cls=False)
+            polys = raw[0] if raw else []
+            boxes = []
+            for poly, _ in polys:
+                poly = np.asarray(poly, dtype=np.int32)
+                x0, y0 = poly[:, 0].min(), poly[:, 1].min()
+                x1, y1 = poly[:, 0].max(), poly[:, 1].max()
+                boxes.append((poly.tolist(), img.crop((int(x0), int(y0), int(x1), int(y1)))))
+        else:
+            boxes = detect_fn(img)
+
+        # 2) recognize each crop using the verifier engine's recognize/ocr
+        recog = _eng(verifier)
+        ver_lang = cfg.engines.get(verifier, {}).get("lang", "auto")
+        parts, confs = [], []
+        for _, crop in boxes:
+            out = None
+            # try recognize() first if present; else ocr()
+            fn = getattr(recog, "recognize", None)
+            if callable(fn):
+                out = fn(crop)
+                if out is not None:  # OcrResult
+                    if out.text:
+                        parts.append(out.text.strip())
+                    if out.confidence is not None:
+                        confs.append(float(out.confidence))
+                    continue
+            out = recog.ocr(crop, lang=ver_lang)
+            t, c = _normalize_engine_result(out)
+            if t:
+                parts.append(t.strip())
+                if c is not None:
+                    confs.append(float(c))
+
+        text = " ".join([p for p in parts if p]).strip()
+        avg = (sum(confs) / len(confs)) if confs else None
+        return text, avg
 
     # IO setup
     found_f = found_csv.open("w", newline="", encoding="utf-8")
@@ -269,6 +316,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         emit_every_sec=2.0,
     )
 
+
     def _jsonl(entry: dict) -> None:
         log_f.write(json.dumps(entry) + "\n"); log_f.flush()
 
@@ -284,6 +332,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                 pm.set_counts(processed, found=found, review=0)
                 _jsonl({"file": fp.name, "action": "skipped", "reason": reason})
                 continue
+
 
             # Try rotations in order; stop at first non-empty text given fusion policy
             best_text, best_conf, best_notes, best_lang = "", None, "", None
@@ -331,19 +380,23 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                             # fallback: if low conf and there exists another near-duplicate text, keep highest conf
 
                     elif strategy == "two_stage":
-                        if not order:
-                            continue
-                        primary_name = order[0]
-                        p_lang = cfg.engines[primary_name].get("lang", "auto")
-                        p_text, p_conf = _normalize_engine_result(_eng(primary_name).ocr(img, lang=p_lang))
-                        best_text, best_conf, best_notes, best_lang = p_text, p_conf, f"{primary_name};rot={rot}", p_lang
+                        text, conf = _run_two_stage(img)
+                        if text:
+                            best_text = text
+                            best_conf = conf
+                            best_lang = cfg.engines.get(verifier, {}).get("lang", "auto")
+                            best_notes = f"two_stage:{verifier};rot={rot}"
 
-                        if not p_text or (p_conf is not None and p_conf < 0.5):
-                            if verifier != "none":
-                                v_lang = cfg.engines.get(verifier, {}).get("lang", "auto")
-                                v_text, v_conf = _normalize_engine_result(_eng(verifier).ocr(img, lang=v_lang))
-                                if v_text and (p_conf is None or (v_conf is not None and v_conf >= p_conf)):
-                                    best_text, best_conf, best_notes, best_lang = v_text, v_conf, f"{verifier};rot={rot}", v_lang
+                    elif strategy == "detector_only":
+                        text, conf = _run_detector_only(img)
+                        if text:
+                            best_text = text
+                            best_conf = conf
+                            best_lang = cfg.engines.get(verifier, {}).get("lang", "auto")
+                            best_notes = f"detector_only:{verifier};rot={rot}"
+
+                    else:
+                        raise ValueError(f"Unknown OCR fusion strategy: {strategy}")
 
                     # if we found text for this rotation, we can break out for first_nonempty or two_stage
                     if best_text and strategy in {"first_nonempty", "two_stage"}:

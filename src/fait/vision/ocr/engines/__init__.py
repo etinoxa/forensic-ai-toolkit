@@ -88,6 +88,9 @@ class _LazyEngine:
     def recognize(self, *args, **kwargs):
         return self._call("recognize", *args, **kwargs)
 
+    def detect(self, *args, **kwargs):
+        return self._call("detect", *args, **kwargs)
+
     @property
     def name(self):
         self._ensure()

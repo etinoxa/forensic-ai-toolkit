@@ -1,14 +1,18 @@
 # src/fait/core/utils.py
 from __future__ import annotations
 from dataclasses import dataclass
-import os, re, io, json, hashlib, pickle, math, tempfile
+from datetime import datetime
+import os, re, io, json, hashlib, pickle, math, tempfile, logging
 from pathlib import Path
 from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union, Mapping
 import logging, json, time
 import subprocess
 import numpy as np
 
+from fait.vision.ocr.config import OcrConfig, FusionCfg, load_ocr_config, EngineCfg
 
+
+log = logging.getLogger("fait.vision.core.utils")
 # ───────────────────────────── Filesystem & IO ─────────────────────────────
 
 
@@ -421,6 +425,102 @@ def sort_pairs(pairs: List[Tuple[str, float]], higher_is_better: bool) -> List[T
 def topk_pairs(pairs: List[Tuple[str, float]], k: int, higher_is_better: bool) -> List[Tuple[str, float]]:
     return sort_pairs(pairs, higher_is_better)[:k]
 
+# ───────────────────────────── Strategy / Verifier/ Engine Order ─────────────────────────────
+def resolve_strategy_verifier(fu: FusionCfg) -> tuple[str, str]:
+    import os
+
+    # 1) read YAML
+    strategy = (fu.strategy or "first_nonempty").lower()
+    verifier = (fu.verifier or "none").lower()
+
+    # 2) read env (both prefixes supported)
+    env_s = (os.getenv("OCR_STRATEGY") or os.getenv("FAIT_OCR_STRATEGY") or "").strip().lower()
+    env_v = (os.getenv("OCR_VERIFIER") or os.getenv("FAIT_OCR_VERIFIER") or "").strip().lower()
+
+    allowed_strats = {
+        "first_nonempty", "best_of", "consensus",
+        "two_stage", "detector_only",
+    }
+    allowed_verifiers = {"tesseract", "trocr", "doctr", "donut", "paddle", "none"}
+
+    # 3) env wins if valid (keep your preferred precedence; this is the simple version)
+    if env_s in allowed_strats:
+        strategy = env_s
+    if env_v in allowed_verifiers:
+        verifier = env_v
+
+    # 4) hard rule: these strategies never use a verifier
+    if strategy in {"first_nonempty", "best_of", "consensus"}:
+        verifier = "none"
+
+    # 5) light validation for the other strategies
+    if strategy == "two_stage" and verifier not in {"tesseract", "trocr", "doctr", "donut"}:
+        verifier = "tesseract"  # sensible default
+    if strategy == "detector_only" and verifier not in {"paddle", "tesseract", "trocr", "doctr", "donut"}:
+        verifier = "paddle"     # sensible default
+
+    return strategy, verifier
+
+def resolve_engine_order(cfg, strategy: str) -> list[str]:
+    """
+    Resolve engine order with an env override (only for first_nonempty/best_of/consensus).
+    Env variables checked: FAIT_OCR_ENGINES, OCR_ENGINES.
+    YAML wins if env unset.
+    """
+    # 1) start from YAML (enabled-only, existing helper)
+    yaml_order = sanitize_engine_order(cfg)
+
+    # 2) only these strategies can be overridden
+    overridable = {"first_nonempty", "best_of", "consensus"}
+    if strategy not in overridable:
+        return yaml_order
+
+    # 3) read env list (if any)
+    raw = (os.getenv("FAIT_OCR_ENGINES") or os.getenv("OCR_ENGINES") or "").strip()
+    if not raw:
+        return yaml_order
+
+    # 4) normalize names and filter to enabled engines
+    #    (accept common aliases and a few typos)
+    alias = {
+        "paddleocr": "paddle",
+        "paddle": "paddle",
+        "tesseract": "tesseract",
+        "trocr": "trocr",
+        "doctr": "doctr",
+        "donut": "donut",
+        "donot": "donut",     # common slip
+    }
+    enabled = {n for n, e in (cfg.engines or {}).items() if (isinstance(e, dict) and e.get("enabled", True)) or (not isinstance(e, dict) and getattr(e, "enabled", True))}
+    desired = []
+    for token in raw.split(","):
+        key = alias.get(token.strip().lower())
+        if key and key in enabled and key in (cfg.engines or {}):
+            desired.append(key)
+
+    # 5) if nothing valid, fall back to YAML
+    if not desired:
+        return yaml_order
+
+    # 6) log and return the override
+    log.info("ocr:engine_order_override", extra={"strategy": strategy, "order": desired})
+    return desired
+
+def sanitize_engine_order(cfg: OcrConfig) -> List[str]:
+    """
+    Keep only enabled engines, preserve the user-specified order.
+    cfg.engines is normalized to dicts later so we can .get('enabled', True).
+    """
+    enabled = {
+        name for name, e in (cfg.engines or {}).items()
+        if (isinstance(e, dict) and e.get("enabled", True)) or (not isinstance(e, dict) and getattr(e, "enabled", True))
+    }
+    return [name for name in (cfg.engine_order or []) if name in enabled]
+
+
+# ───────────────────────────── Result Normalization ─────────────────────────────
+
+
 
 # ───────────────────────────── Plotting (headless-safe) ─────────────────────────────
 
@@ -599,6 +699,55 @@ def write_object_report(
             f.write("  (none)\n")
 
     return str(path.resolve())
+
+def write_report_ocr(
+    outputs_root: Union[str, Path],
+    *,
+    strategy: str,
+    engines: Optional[Iterable[str]] = None,
+    verifier: Optional[str] = None,
+    timestamp: Optional[str] = None,
+    counts: Optional[Dict[str, int]] = None,
+    extra: Optional[Dict[str, str]] = None,
+    filename: str = "report.txt",
+    ensure_dir: bool = True,
+) -> Tuple[Path, Path]:
+    """Create OCR run dir with the naming you want and write a small text report."""
+    strategy = (strategy or "").lower().strip()
+    engines_list: List[str] = [e.strip() for e in (engines or []) if str(e).strip()]
+    ver = (verifier or "none").lower().strip()
+    stamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if strategy in {"first_nonempty", "best_of", "consensus"}:
+        tag = f"{strategy}_{'-'.join(engines_list) if engines_list else 'none'}"
+    elif strategy == "two_stage":
+        tag = f"two_stage_paddle_{ver}"
+    elif strategy == "detector_only":
+        tag = f"detector_only_{ver}"
+    else:
+        tag = strategy or "ocr"
+
+    run_name = f"{tag}_{stamp}"
+    run_dir = Path(outputs_root) / "ocr" / run_name
+    if ensure_dir:
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+    report_path = run_dir / filename
+    with report_path.open("w", encoding="utf-8") as f:
+        f.write("=== OCR SUMMARY ===\n")
+        f.write(f"Strategy     : {strategy}\n")
+        if engines_list:
+            f.write(f"Engines      : {', '.join(engines_list)}\n")
+        if ver and ver != "none":
+            f.write(f"Verifier     : {ver}\n")
+        if counts:
+            for k, v in counts.items():
+                f.write(f"{k.capitalize():12}: {v}\n")
+        if extra:
+            for k, v in extra.items():
+                f.write(f"{k:12}: {v}\n")
+
+    return run_dir, report_path
 
 # ───────────────────────────── Progress Status ─────────────────────────────
 
@@ -821,7 +970,7 @@ __all__ = [
     "l2_normalize", "cosine_similarity", "compute_distance",
     "sort_pairs", "topk_pairs",
     # Plotting & reporting
-    "plot_scores", "plot_distances", "plot_similarities", "write_report", "write_object_report",
+    "plot_scores", "plot_distances", "plot_similarities", "write_report", "write_object_report", "write_report_ocr",
     # Progress status
     "ProgressMeter",
     # Fusion
