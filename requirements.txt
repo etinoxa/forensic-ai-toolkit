@@ -15,7 +15,7 @@ paddlepaddle
 paddleocr
 rapidfuzz
 #easyocr
-#pytesseract
+pytesseract
 python-doctr
 
 #NLP

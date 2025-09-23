@@ -33,38 +33,29 @@ class PaddleEngine:
         self.lang = lang
         self.name = "paddle"
 
+        # Add debug flag
+        self._debug = True
+
     def _ensure_loaded(self):
         if self._impl is not None:
             return
         t0 = time.time()
         try:
             from paddleocr import PaddleOCR
+
+            # Add explicit parameters matching your successful test
             self._impl = PaddleOCR(
-                use_angle_cls=True,
-                lang=self.lang  # CPU-safe defaults
+                lang=self.lang,
+                use_angle_cls=False,
+                det_db_thresh=0.20,
+                det_db_box_thresh=0.40,  # Lower than original 0.60
+                det_db_unclip_ratio=2.0,  # Higher than original 1.8
+                # show_log=True,  # Enable logging to see what's happening
             )
-            log.info("paddle:init_done", extra={"secs": round(time.time()-t0, 2)})
-        except Exception:
+            log.info("paddle:init_done", extra={"secs": round(time.time() - t0, 2)})
+        except Exception as e:
             log.exception("paddle:init_error")
             raise
-
-    def detect(self, img: Image.Image):
-        self._ensure_loaded()
-        im = np.array(img.convert("RGB"))
-
-        # det only, no recognition
-        # paddleocr returns: [[ [poly, score], ... ]] when rec=False
-        det_out = self._impl.ocr(im, det=True, rec=False, cls=False)
-        polys = det_out[0] if det_out else []
-
-        boxes = []
-        for poly, _score in polys:
-            poly = np.asarray(poly, dtype=np.int32)
-            x0, y0 = poly[:, 0].min(), poly[:, 1].min()
-            x1, y1 = poly[:, 0].max(), poly[:, 1].max()
-            crop = img.crop((int(x0), int(y0), int(x1), int(y1)))
-            boxes.append((poly.tolist(), crop))
-        return boxes
 
     # ---------- public APIs ----------
 
@@ -79,56 +70,96 @@ class PaddleEngine:
             return None
         return {"text": res.text, "confidence": res.confidence, "lang": res.lang, "engine": self.name}
 
-    def recognize(self, img: Image.Image) -> OcrResult | None:
+    def detect(self, img: Image.Image) -> List[Tuple[np.ndarray, Image.Image]]:
+        """Returns: list of (polygon[4x2], cropped_pil)"""
         self._ensure_loaded()
         im = np.array(img.convert("RGB"))
+        out = []
+
+        if self._debug:
+            # Save the image being processed for debugging
+            debug_path = f"debug_detect_{time.time()}.png"
+            Image.fromarray(im).save(debug_path)
+            log.info(f"Saved debug image: {debug_path}")
+
         try:
-            result = self._impl.ocr(im, det=True, rec=True, cls=True)
-            page = _first_page(result)
-            if not page:
-                log.info("paddle:empty", extra={"boxes": 0})
-                return None
-            texts, confs = [], []
-            for item in page:
-                txt, conf = _extract_text_conf(item)
-                if txt:
-                    texts.append(txt)
-                    if conf is not None: confs.append(conf)
-            if not texts:
-                log.info("paddle:no_text", extra={"boxes": len(page)})
-                return None
-            text = " ".join(texts).strip()
-            avg = (sum(confs)/len(confs)) if confs else None
-            log.info("paddle:got_text", extra={"chars": len(text), "boxes": len(texts), "avg_conf": (avg or 0)})
-            return OcrResult(text=text, lang=self.lang, confidence=avg, engine=self.name)
-        except Exception:
-            log.exception("paddle:error")
-            return None
+            # Call OCR exactly like your successful test
+            result = self._impl.ocr(im)
+
+            if self._debug:
+                log.info(f"Raw result type: {type(result)}")
+                if result:
+                    log.info(f"First element type: {type(result[0]) if result else 'None'}")
+
+            # Handle the new dictionary format
+            if isinstance(result, list) and result:
+                if isinstance(result[0], dict):
+                    # New PaddleX format
+                    dt_polys = result[0].get('dt_polys', [])
+                    rec_texts = result[0].get('rec_texts', [])
+
+                    log.info(f"Found {len(dt_polys)} polygons, {len(rec_texts)} texts")
+
+                    for poly in dt_polys:
+                        x0, y0 = int(np.min(poly[:, 0])), int(np.min(poly[:, 1]))
+                        x1, y1 = int(np.max(poly[:, 0])), int(np.max(poly[:, 1]))
+
+                        # Ensure valid coordinates
+                        x0, y0 = max(0, x0), max(0, y0)
+                        x1, y1 = min(img.width, x1), min(img.height, y1)
+
+                        if x1 > x0 and y1 > y0:
+                            crop = img.crop((x0, y0, x1, y1))
+                            out.append((poly, crop))
+                else:
+                    # Old format - list of [poly, (text, conf)]
+                    for item in result[0] if result[0] else []:
+                        if isinstance(item, (list, tuple)) and len(item) >= 1:
+                            poly = np.array(item[0], dtype=np.float32)
+                            x0, y0 = int(np.min(poly[:, 0])), int(np.min(poly[:, 1]))
+                            x1, y1 = int(np.max(poly[:, 0])), int(np.max(poly[:, 1]))
+
+                            x0, y0 = max(0, x0), max(0, y0)
+                            x1, y1 = min(img.width, x1), min(img.height, y1)
+
+                            if x1 > x0 and y1 > y0:
+                                crop = img.crop((x0, y0, x1, y1))
+                                out.append((poly, crop))
+
+            log.info("paddle:detect", extra={"boxes": len(out)})
+
+        except Exception as e:
+            log.exception(f"paddle:detect_error: {str(e)}")
+
+        return out
 
     def detect(self, img: Image.Image) -> List[Tuple[np.ndarray, Image.Image]]:
-        """
-        Returns: list of (polygon[4x2], cropped_pil)
-        """
+        """Returns: list of (polygon[4x2], cropped_pil)"""
         self._ensure_loaded()
         im = np.array(img.convert("RGB"))
         out = []
         try:
-            result = self._impl.ocr(im)  # detection only
-            page = _first_page(result)
-            for item in page:
-                if not isinstance(item, (list, tuple)) or not item:
-                    continue
-                poly = np.array(item[0], dtype=np.float32)  # 4 points
-                # simple rectangular crop (bbox) – robust & fast
-                x0, y0 = np.min(poly[:,0]), np.min(poly[:,1])
-                x1, y1 = np.max(poly[:,0]), np.max(poly[:,1])
-                crop = img.crop((int(x0), int(y0), int(x1), int(y1)))
-                out.append((poly, crop))
-            log.info("paddle:detect", extra={"boxes": len(out)})
-        except Exception:
+            result = self._impl.ocr(im)
+
+            # Handle new format
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                dt_polys = result[0].get('dt_polys', [])
+
+                for poly in dt_polys:
+                    # poly is already a numpy array
+                    x0, y0 = np.min(poly[:, 0]), np.min(poly[:, 1])
+                    x1, y1 = np.max(poly[:, 0]), np.max(poly[:, 1])
+                    crop = img.crop((int(x0), int(y0), int(x1), int(y1)))
+                    out.append((poly, crop))
+
+                log.info("paddle:detect", extra={"boxes": len(out)})
+                return out
+
+            # Handle old format...
+
+        except Exception as e:
             log.exception("paddle:detect_error")
         return out
-
 
 # ---------- helpers ----------
 
