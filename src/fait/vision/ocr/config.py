@@ -50,16 +50,23 @@ Verifier = Literal["trocr", "donut", "tesseract", "paddleocr", "doctr", "none", 
 @dataclass
 class EngineCfg:
     # Generic knobs all engines may use (extra keys in YAML will be ignored by the pipeline)
-    enabled: bool = True
-    lang: Optional[str] = None          # e.g. "eng" / "en" / "auto"
-    model_id: Optional[str] = None      # TrOCR / Donut hub id
-    det_arch: Optional[str] = None      # DocTR detector arch
-    reco_arch: Optional[str] = None     # DocTR recognizer arch
+    @dataclass
+    class EngineCfg:
+        enabled: bool = True
+        lang: Optional[str] = None
+        model_id: Optional[str] = None
+        det_arch: Optional[str] = None
+        reco_arch: Optional[str] = None
 
-    # Tesseract specifics (optional)
-    tesseract_cmd: Optional[str] = None
-    psm: Optional[int] = None
-    oem: Optional[int] = None
+        # Tesseract specifics
+        tesseract_cmd: Optional[str] = None
+        psm: Optional[int] = None
+        oem: Optional[int] = None
+
+        # PaddleOCR detection parameters - ADD THESE!
+        det_db_thresh: Optional[float] = None
+        det_db_box_thresh: Optional[float] = None
+        det_db_unclip_ratio: Optional[float] = None
 
 @dataclass
 class FusionCfg:

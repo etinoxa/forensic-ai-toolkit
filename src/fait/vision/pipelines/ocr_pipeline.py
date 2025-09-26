@@ -239,48 +239,160 @@ def run_ocr(cfg: OcrConfig) -> Dict:
             return v_text, v_conf, lang_verifier, f"two_stage:{primary}→{verifier}"
         return p_text, p_conf, lang_paddle, f"two_stage:{primary}"
 
-    def _run_detector_only(img):
-        # detection with Paddle; recognition with chosen verifier (can be 'paddle')
-        if verifier not in {"paddle", "tesseract", "trocr", "doctr", "donut"}:
-            raise RuntimeError("detector_only verifier must be one of {'paddle','tesseract','trocr','doctr','donut'}")
+    def _direct_paddle_detect_and_ocr(img, verifier_name, lang):
+        """Direct PaddleOCR call bypassing the engine wrapper"""
+        from paddleocr import PaddleOCR
+        import numpy as np
+
+        # Initialize PaddleOCR directly with working parameters
+        paddle = PaddleOCR(
+            use_angle_cls=False,
+            lang='en',
+            det_db_thresh=0.2,
+            det_db_box_thresh=0.3,
+            det_db_unclip_ratio=2.0
+        )
+
+        # Run OCR
+        result = paddle.ocr(np.array(img))
+
+        # Parse results
+        if result and isinstance(result, list) and result[0]:
+            if isinstance(result[0], dict):
+                # New format
+                texts = result[0].get('rec_texts', [])
+                scores = result[0].get('rec_scores', [])
+                if texts:
+                    text = ' '.join(texts)
+                    conf = sum(scores) / len(scores) if scores else None
+                    return text, conf, lang, f"direct_paddle"
+            else:
+                # Old format
+                texts = []
+                for item in result[0]:
+                    if len(item) >= 2 and item[1] and len(item[1]) >= 1:
+                        texts.append(str(item[1][0]))
+                if texts:
+                    return ' '.join(texts), None, lang, f"direct_paddle"
+
+        return "", None, lang, "direct_paddle:no_text"
+
+    # def _run_detector_only(img, lang):
+    #     """Run detection with Paddle, recognition with verifier"""
+    #     if verifier not in allowed_verifiers_det:
+    #         raise RuntimeError(
+    #             f"detector_only verifier must be one of {sorted(allowed_verifiers_det)}; got {verifier!r}")
+    #     if "paddle" not in cfg.engines or not cfg.engines.get("paddle", {}).get("enabled", True):
+    #         raise RuntimeError("detector_only requires Paddle (detector) enabled.")
+    #
+    #     # 1) detect
+    #     det = _eng("paddle")
+    #     boxes = det.detect(img)
+    #     log.info("paddle:detect", extra={"boxes": len(boxes) if boxes else 0})
+    #
+    #     if not boxes:
+    #         # Try fallback: full-page OCR with verifier
+    #         log.info("detector_only:fallback_fullpage")
+    #         v_text, v_conf = _normalize_engine_result(_eng(verifier).ocr(img, lang=lang))
+    #         if v_text:
+    #             return v_text, v_conf, lang, "detector_only:fallback_fullpage"
+    #         return "", None, lang, "detector_only:no_text"
+    #
+    #     # 2) recognize each crop
+    #     recog = _eng(verifier)
+    #     parts, confs = [], []
+    #
+    #     for _, crop in boxes:
+    #         # Try recognize method first if available
+    #         if hasattr(recog, 'recognize') and callable(recog.recognize):
+    #             out = recog.recognize(crop)
+    #             if out is not None and hasattr(out, 'text'):
+    #                 if out.text.strip():
+    #                     parts.append(out.text.strip())
+    #                     if hasattr(out, 'confidence') and out.confidence is not None:
+    #                         confs.append(float(out.confidence))
+    #                 continue
+    #
+    #         # Fallback to ocr method
+    #         result = recog.ocr(crop, lang=lang)
+    #         t, c = _normalize_engine_result(result)
+    #         if t:
+    #             parts.append(t.strip())
+    #             if c is not None:
+    #                 confs.append(float(c))
+    #
+    #     text = " ".join(parts).strip()
+    #     avg = (sum(confs) / len(confs)) if confs else None
+    #
+    #     return text, avg, lang, f"detector_only:paddle→{verifier}"
+
+
+
+    # IO setup
+
+    def _run_detector_only(img, lang):
+        """Run detection with Paddle, recognition with verifier"""
+        if verifier not in allowed_verifiers_det:
+            raise RuntimeError(
+                f"detector_only verifier must be one of {sorted(allowed_verifiers_det)}; got {verifier!r}")
         if "paddle" not in cfg.engines or not cfg.engines.get("paddle", {}).get("enabled", True):
             raise RuntimeError("detector_only requires Paddle (detector) enabled.")
 
-        # languages: use verifier’s configured lang (default to "auto")
-        lang_verifier = (cfg.engines.get(verifier) or {}).get("lang", "auto")
-
         # 1) detect
         det = _eng("paddle")
-        boxes = det.detect(img)  # expected: [(poly, crop), ...]
+        boxes = det.detect(img)
         log.info("paddle:detect", extra={"boxes": len(boxes) if boxes else 0})
-        if not boxes:
-            return "", None, lang_verifier, "detector_only:no_boxes"
 
-        # 2) recognize each crop via verifier
+        if not boxes:
+            # Try fallback: full-page OCR with verifier
+            log.info("detector_only:fallback_fullpage")
+            v_text, v_conf = _normalize_engine_result(_eng(verifier).ocr(img, lang=lang))
+            if v_text:
+                return v_text, v_conf, lang, "detector_only:fallback_fullpage"
+            return "", None, lang, "detector_only:no_text"
+
+        # 2) recognize each crop
         recog = _eng(verifier)
         parts, confs = [], []
-        for _, crop in boxes:
-            out = None
-            # prefer .recognize(crop) when available; else fall back to .ocr(crop, lang=...)
-            fn = getattr(recog, "recognize", None)
-            if callable(fn):
-                out = fn(crop)
-                if out is not None and getattr(out, "text", ""):
-                    parts.append(out.text.strip())
-                    if getattr(out, "confidence", None) is not None:
-                        confs.append(float(out.confidence))
-                    continue
-            t, c = _normalize_engine_result(recog.ocr(crop, lang=lang_verifier))
-            if t:
-                parts.append(t.strip())
-                if c is not None:
-                    confs.append(float(c))
 
-        text = " ".join([p for p in parts if p]).strip()
+        log.info(f"Processing {len(boxes)} detected regions with {verifier}")
+
+        for i, (_, crop) in enumerate(boxes):
+            try:
+                # Log crop info
+                if i < 3:  # Log first few crops
+                    log.info(f"Crop {i}: size={crop.size}")
+
+                # Try recognize method first if available
+                if hasattr(recog, 'recognize') and callable(recog.recognize):
+                    out = recog.recognize(crop)
+                    if out is not None and hasattr(out, 'text'):
+                        if out.text.strip():
+                            parts.append(out.text.strip())
+                            if hasattr(out, 'confidence') and out.confidence is not None:
+                                confs.append(float(out.confidence))
+                            log.info(f"Crop {i} recognized: {out.text[:30]}...")
+                        continue
+
+                # Fallback to ocr method
+                result = recog.ocr(crop, lang=lang)
+                t, c = _normalize_engine_result(result)
+                if t:
+                    parts.append(t.strip())
+                    if c is not None:
+                        confs.append(float(c))
+                    log.info(f"Crop {i} OCR'd: {t[:30]}...")
+            except Exception as e:
+                log.error(f"Error recognizing crop {i}: {e}")
+
+        log.info(f"Recognition complete: {len(parts)} text regions found from {len(boxes)} boxes")
+
+        text = " ".join(parts).strip()
         avg = (sum(confs) / len(confs)) if confs else None
-        return text, avg, lang_verifier, f"detector_only:paddle→{verifier}"
 
-    # IO setup
+        return text, avg, lang, f"detector_only:paddle→{verifier}"
+
+
     found_f = found_csv.open("w", newline="", encoding="utf-8")
     fail_f = failures_csv.open("w", newline="", encoding="utf-8")
     log_f = jsonl_log.open("w", encoding="utf-8")
@@ -338,7 +450,6 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                     if strategy == "first_nonempty":
                         for name in order:
                             lang = cfg.engines[name].get("lang", "auto")
-                            log.info("ocr:call", extra={"engine": name, "rot": rot, "lang": lang})
                             text, conf = _normalize_engine_result(_eng(name).ocr(img, lang=lang))
                             if text:
                                 best_text, best_conf, best_notes, best_lang = text, conf, f"{name};rot={rot}", lang
@@ -375,14 +486,25 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                             best_text, best_conf, best_lang, best_notes = text, conf, lang_used, f"{notes};rot={rot}"
                             break  # two-stage is single-result per rotation
 
+                    #Works with _direct_paddle_detect_and_ocr
+                    # elif strategy == "detector_only":
+                    #     lang = (cfg.engines.get(verifier) or {}).get("lang", "auto")
+                    #
+                    #     # Use direct PaddleOCR instead of engine wrapper
+                    #     text, conf, lang_used, notes = _direct_paddle_detect_and_ocr(img, verifier, lang)
+                    #
+                    #     log.info("ocr:stage_out", extra={"strategy": strategy, "rot": rot, "len": len(text or "")})
+                    #     if text:
+                    #         best_text, best_conf, best_lang, best_notes = text, conf, lang_used, f"{notes};rot={rot}"
+
                     elif strategy == "detector_only":
-                        text, conf, lang_used, notes = _run_detector_only(img)
+                        # Add this line to define lang
+                        lang = (cfg.engines.get(verifier) or {}).get("lang", "auto")
+
+                        text, conf, lang_used, notes = _run_detector_only(img, lang)
                         log.info("ocr:stage_out", extra={"strategy": strategy, "rot": rot, "len": len(text or "")})
                         if text:
                             best_text, best_conf, best_lang, best_notes = text, conf, lang_used, f"{notes};rot={rot}"
-
-
-
 
                     # if we found text for this rotation, we can break out for first_nonempty or two_stage
                     if best_text and strategy in {"first_nonempty", "two_stage"}:

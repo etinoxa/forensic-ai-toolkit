@@ -20,7 +20,7 @@ from fait.core.logging_config import setup_logging
 setup_logging()
 
 # from fait.vision.ocr.config import load_ocr_config
-from fait.vision.ocr.config import load_ocr_config
+
 from fait.vision.pipelines.ocr_pipeline import run_ocr_from_yaml
 
 

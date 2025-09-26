@@ -14,7 +14,11 @@ log = logging.getLogger("fait.vision.ocr.paddle")
 
 
 class PaddleEngine:
-    def __init__(self, lang: str = "en", cache_dir: Optional[str] = None):
+    def __init__(self, lang: str = "en", cache_dir: Optional[str] = None, **kwargs):
+        log.info(f"PaddleEngine init with kwargs: {kwargs}")
+
+        if lang == "auto":
+            lang = "en"  # Default to English when "auto" is specified
         cache_root = cache_dir or str(get_paths().models_cache / "ocr")
         ensure_folder(cache_root)
 
@@ -36,6 +40,15 @@ class PaddleEngine:
         # Add debug flag
         self._debug = True
 
+        # Store detection parameters with defaults
+        self.det_db_thresh = kwargs.get('det_db_thresh', 0.20)
+        self.det_db_box_thresh = kwargs.get('det_db_box_thresh', 0.40)
+        self.det_db_unclip_ratio = kwargs.get('det_db_unclip_ratio', 2.0)
+
+        log.info(f"Detection params: thresh={self.det_db_thresh}, "
+                 f"box_thresh={self.det_db_box_thresh}, "
+                 f"unclip={self.det_db_unclip_ratio}")
+
     def _ensure_loaded(self):
         if self._impl is not None:
             return
@@ -47,10 +60,9 @@ class PaddleEngine:
             self._impl = PaddleOCR(
                 lang=self.lang,
                 use_angle_cls=False,
-                det_db_thresh=0.20,
-                det_db_box_thresh=0.40,  # Lower than original 0.60
-                det_db_unclip_ratio=2.0,  # Higher than original 1.8
-                # show_log=True,  # Enable logging to see what's happening
+                det_db_thresh=self.det_db_thresh,
+                det_db_box_thresh=self.det_db_box_thresh,
+                det_db_unclip_ratio=self.det_db_unclip_ratio,
             )
             log.info("paddle:init_done", extra={"secs": round(time.time() - t0, 2)})
         except Exception as e:
@@ -76,90 +88,68 @@ class PaddleEngine:
         im = np.array(img.convert("RGB"))
         out = []
 
-        if self._debug:
-            # Save the image being processed for debugging
-            debug_path = f"debug_detect_{time.time()}.png"
-            Image.fromarray(im).save(debug_path)
-            log.info(f"Saved debug image: {debug_path}")
-
         try:
-            # Call OCR exactly like your successful test
             result = self._impl.ocr(im)
 
-            if self._debug:
-                log.info(f"Raw result type: {type(result)}")
-                if result:
-                    log.info(f"First element type: {type(result[0]) if result else 'None'}")
+            if result and isinstance(result, list) and result[0]:
+                first = result[0]
 
-            # Handle the new dictionary format
-            if isinstance(result, list) and result:
-                if isinstance(result[0], dict):
-                    # New PaddleX format
-                    dt_polys = result[0].get('dt_polys', [])
-                    rec_texts = result[0].get('rec_texts', [])
+                # OCRResult uses dictionary-like access
+                if hasattr(first, '__getitem__'):
+                    try:
+                        dt_polys = first['dt_polys']
 
-                    log.info(f"Found {len(dt_polys)} polygons, {len(rec_texts)} texts")
+                        if dt_polys:
+                            for poly in dt_polys:
+                                poly_array = np.array(poly, dtype=np.float32)
 
-                    for poly in dt_polys:
-                        x0, y0 = int(np.min(poly[:, 0])), int(np.min(poly[:, 1]))
-                        x1, y1 = int(np.max(poly[:, 0])), int(np.max(poly[:, 1]))
+                                x0 = int(max(0, np.min(poly_array[:, 0])))
+                                y0 = int(max(0, np.min(poly_array[:, 1])))
+                                x1 = int(min(img.width, np.max(poly_array[:, 0])))
+                                y1 = int(min(img.height, np.max(poly_array[:, 1])))
 
-                        # Ensure valid coordinates
-                        x0, y0 = max(0, x0), max(0, y0)
-                        x1, y1 = min(img.width, x1), min(img.height, y1)
+                                if x1 > x0 and y1 > y0:
+                                    crop = img.crop((x0, y0, x1, y1))
+                                    out.append((poly_array, crop))
+                    except KeyError:
+                        pass
 
-                        if x1 > x0 and y1 > y0:
-                            crop = img.crop((x0, y0, x1, y1))
-                            out.append((poly, crop))
-                else:
-                    # Old format - list of [poly, (text, conf)]
-                    for item in result[0] if result[0] else []:
-                        if isinstance(item, (list, tuple)) and len(item) >= 1:
-                            poly = np.array(item[0], dtype=np.float32)
-                            x0, y0 = int(np.min(poly[:, 0])), int(np.min(poly[:, 1]))
-                            x1, y1 = int(np.max(poly[:, 0])), int(np.max(poly[:, 1]))
-
-                            x0, y0 = max(0, x0), max(0, y0)
-                            x1, y1 = min(img.width, x1), min(img.height, y1)
-
-                            if x1 > x0 and y1 > y0:
-                                crop = img.crop((x0, y0, x1, y1))
-                                out.append((poly, crop))
-
-            log.info("paddle:detect", extra={"boxes": len(out)})
+            log.info(f"paddle:detect boxes={len(out)}")
 
         except Exception as e:
             log.exception(f"paddle:detect_error: {str(e)}")
 
         return out
 
-    def detect(self, img: Image.Image) -> List[Tuple[np.ndarray, Image.Image]]:
-        """Returns: list of (polygon[4x2], cropped_pil)"""
+    def recognize(self, img: Image.Image) -> OcrResult | None:
+        """Recognize text from an image"""
         self._ensure_loaded()
         im = np.array(img.convert("RGB"))
-        out = []
+
         try:
             result = self._impl.ocr(im)
 
-            # Handle new format
-            if isinstance(result, list) and result and isinstance(result[0], dict):
-                dt_polys = result[0].get('dt_polys', [])
+            if result and isinstance(result, list) and result[0]:
+                first = result[0]
 
-                for poly in dt_polys:
-                    # poly is already a numpy array
-                    x0, y0 = np.min(poly[:, 0]), np.min(poly[:, 1])
-                    x1, y1 = np.max(poly[:, 0]), np.max(poly[:, 1])
-                    crop = img.crop((int(x0), int(y0), int(x1), int(y1)))
-                    out.append((poly, crop))
+                # OCRResult uses dictionary-like access
+                if hasattr(first, '__getitem__'):
+                    try:
+                        rec_texts = first['rec_texts']
+                        rec_scores = first['rec_scores']
 
-                log.info("paddle:detect", extra={"boxes": len(out)})
-                return out
+                        if rec_texts:
+                            text = ' '.join(rec_texts).strip()
+                            avg_conf = sum(rec_scores) / len(rec_scores) if rec_scores else None
+                            log.info(f"paddle:recognize text={text[:50]}... conf={avg_conf}")
+                            return OcrResult(text=text, lang=self.lang, confidence=avg_conf, engine=self.name)
+                    except KeyError as e:
+                        log.error(f"Missing key in OCRResult: {e}")
 
-            # Handle old format...
+        except Exception:
+            log.exception("paddle:recognize_error")
 
-        except Exception as e:
-            log.exception("paddle:detect_error")
-        return out
+        return None
 
 # ---------- helpers ----------
 
