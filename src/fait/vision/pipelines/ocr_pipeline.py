@@ -449,6 +449,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
 
                     if strategy == "first_nonempty":
                         for name in order:
+                            log.info("ocr:call", extra={"engine": name})
                             lang = cfg.engines[name].get("lang", "auto")
                             text, conf = _normalize_engine_result(_eng(name).ocr(img, lang=lang))
                             if text:
