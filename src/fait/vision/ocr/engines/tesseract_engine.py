@@ -72,10 +72,10 @@ class TesseractEngine:
             text = text.strip()
 
             if not text:
-                log.warning(f"Tesseract found no text in image {img.size}")
+                log.debug(f"Tesseract found no text in image {img.size}")
                 return None
 
-            log.info(f"Tesseract found: {len(text)} chars")
+            log.debug(f"Tesseract found: {len(text)} chars")
 
             # For confidence, we can use image_to_data separately if needed
             # But for now, just return the text without confidence

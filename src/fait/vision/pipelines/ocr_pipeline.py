@@ -23,9 +23,13 @@ from fait.core.utils import (
     write_report_ocr,
 )
 # One true config types & loader
-from fait.vision.ocr.config import OcrConfig, FusionCfg, load_ocr_config, EngineCfg
+from fait.vision.ocr.config import OcrConfig, FusionCfg, load_ocr_config
 # Engine factory (do NOT import the module named `engines` to avoid name clashes)
-from fait.vision.ocr.engines import get_engine
+import fait.vision.ocr.engines as engreg
+
+# if not hasattr(get_engine, "get_engine"):
+#     from fait.vision.ocr.engines import get_engine as _get_engine
+#     get_engine.get_engine = _get_engine
 
 
 
@@ -87,8 +91,13 @@ def _should_skip(path: Path, min_kb: int, min_dim: int) -> Tuple[bool, str]:
     try:
         with Image.open(path) as im:
             w, h = im.size
-        if w < min_dim or h < min_dim:
-            return True, f"too_small ({w}x{h} < {min_dim}px)"
+        # Accept an int or a pair [mw, mh]
+        if isinstance(min_dim, (list, tuple)) and len(min_dim) >= 2:
+            mw, mh = int(min_dim[0]), int(min_dim[1])
+        else:
+            mw = mh = int(min_dim)
+        if w < mw or h < mh:
+            return True, f"too_small ({w}x{h} < {mw}x{mh}px)"
     except Exception:
         return True, "open_failed"
 
@@ -164,6 +173,12 @@ def run_ocr(cfg: OcrConfig) -> Dict:
 
     # Strategy/verifier resolution (ENV wins only when YAML=auto)
     strategy, verifier = resolve_strategy_verifier(cfg.fusion)
+    # If the cfg object has explicit .strategy / .verifier attributes set, honor them.
+    if hasattr(cfg, "strategy") and isinstance(getattr(cfg, "strategy"), str) and cfg.strategy:
+        strategy = cfg.strategy.strip().lower()
+    if hasattr(cfg, "verifier") and isinstance(getattr(cfg, "verifier"), str) and cfg.verifier:
+        verifier = cfg.verifier.strip().lower()
+
     # -------- engine order (enabled only) --------
     order = resolve_engine_order(cfg, strategy)
     if not order:
@@ -207,7 +222,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
 
     def _eng(name: str):
         if name not in _engines_cache:
-            _engines_cache[name] = get_engine(name, cfg.engines.get(name))
+            _engines_cache[name] = engreg.get_engine(name, cfg.engines.get(name))
         return _engines_cache[name]
 
     # ------------- strategies -------------
@@ -276,59 +291,6 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                     return ' '.join(texts), None, lang, f"direct_paddle"
 
         return "", None, lang, "direct_paddle:no_text"
-
-    # def _run_detector_only(img, lang):
-    #     """Run detection with Paddle, recognition with verifier"""
-    #     if verifier not in allowed_verifiers_det:
-    #         raise RuntimeError(
-    #             f"detector_only verifier must be one of {sorted(allowed_verifiers_det)}; got {verifier!r}")
-    #     if "paddle" not in cfg.engines or not cfg.engines.get("paddle", {}).get("enabled", True):
-    #         raise RuntimeError("detector_only requires Paddle (detector) enabled.")
-    #
-    #     # 1) detect
-    #     det = _eng("paddle")
-    #     boxes = det.detect(img)
-    #     log.info("paddle:detect", extra={"boxes": len(boxes) if boxes else 0})
-    #
-    #     if not boxes:
-    #         # Try fallback: full-page OCR with verifier
-    #         log.info("detector_only:fallback_fullpage")
-    #         v_text, v_conf = _normalize_engine_result(_eng(verifier).ocr(img, lang=lang))
-    #         if v_text:
-    #             return v_text, v_conf, lang, "detector_only:fallback_fullpage"
-    #         return "", None, lang, "detector_only:no_text"
-    #
-    #     # 2) recognize each crop
-    #     recog = _eng(verifier)
-    #     parts, confs = [], []
-    #
-    #     for _, crop in boxes:
-    #         # Try recognize method first if available
-    #         if hasattr(recog, 'recognize') and callable(recog.recognize):
-    #             out = recog.recognize(crop)
-    #             if out is not None and hasattr(out, 'text'):
-    #                 if out.text.strip():
-    #                     parts.append(out.text.strip())
-    #                     if hasattr(out, 'confidence') and out.confidence is not None:
-    #                         confs.append(float(out.confidence))
-    #                 continue
-    #
-    #         # Fallback to ocr method
-    #         result = recog.ocr(crop, lang=lang)
-    #         t, c = _normalize_engine_result(result)
-    #         if t:
-    #             parts.append(t.strip())
-    #             if c is not None:
-    #                 confs.append(float(c))
-    #
-    #     text = " ".join(parts).strip()
-    #     avg = (sum(confs) / len(confs)) if confs else None
-    #
-    #     return text, avg, lang, f"detector_only:paddle→{verifier}"
-
-
-
-    # IO setup
 
     def _run_detector_only(img, lang):
         """Run detection with Paddle, recognition with verifier"""
@@ -449,7 +411,6 @@ def run_ocr(cfg: OcrConfig) -> Dict:
 
                     if strategy == "first_nonempty":
                         for name in order:
-                            log.info("ocr:call", extra={"engine": name})
                             lang = cfg.engines[name].get("lang", "auto")
                             text, conf = _normalize_engine_result(_eng(name).ocr(img, lang=lang))
                             if text:
@@ -548,5 +509,6 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         "failures": failed,
         "total": total,
         "out_dir": str(run_dir),
+        "run_dir": str(run_dir),
         "secs": elapsed,
     }
