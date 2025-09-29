@@ -45,6 +45,8 @@ def test_detector_only_calls_paddle_and_verifier(monkeypatch, tmp_paths, tmp_pat
     cfg.min_file_kb = 0
     cfg.min_dim_px = [0, 0]
     cfg.engines = {"paddle": {"enabled": True}, "trocr": {"enabled": True}}
+    cfg.fusion = ocrmod.FusionCfg()
+    cfg.engine_order = ["paddle", "trocr", "tesseract"]
 
     out = ocrmod.run_ocr(cfg)
     assert out["processed"] == 2

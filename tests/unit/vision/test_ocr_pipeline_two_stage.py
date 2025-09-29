@@ -37,6 +37,8 @@ def test_two_stage_prefers_verifier(monkeypatch, tmp_paths, tmp_path):
     cfg.min_file_kb = 0
     cfg.min_dim_px = [0, 0]
     cfg.engines = {"paddle": {"enabled": True}, "trocr": {"enabled": True}}
+    cfg.fusion = ocrmod.FusionCfg()
+    cfg.engine_order = ["paddle", "trocr", "tesseract"]
 
     out = ocrmod.run_ocr(cfg)
     assert out["processed"] == 1
