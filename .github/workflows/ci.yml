@@ -17,6 +17,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
+
+      - name: Prepare test env
+        run: |
+          echo "OMP_NUM_THREADS=1"           >> $GITHUB_ENV
+          echo "OPENBLAS_NUM_THREADS=1"      >> $GITHUB_ENV
+          echo "MKL_NUM_THREADS=1"           >> $GITHUB_ENV
+          echo "MKL_THREADING_LAYER=GNU"     >> $GITHUB_ENV
+          echo "NUMEXPR_NUM_THREADS=1"       >> $GITHUB_ENV
+          echo "KMP_INIT_AT_FORK=FALSE"      >> $GITHUB_ENV
+          python -m pip install -U pip
+          # only light deps; avoid paddle/torch/doctr in CI
+          pip install pytest pytest-cov pillow numpy transformers==4.43.4
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
