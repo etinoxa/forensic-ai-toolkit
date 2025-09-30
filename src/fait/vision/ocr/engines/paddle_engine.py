@@ -94,25 +94,30 @@ class PaddleEngine:
             if result and isinstance(result, list) and result[0]:
                 first = result[0]
 
-                # OCRResult uses dictionary-like access
-                if hasattr(first, '__getitem__'):
-                    try:
-                        dt_polys = first['dt_polys']
+                # New-style dict result: {'dt_polys': ...}
+                if isinstance(first, dict) and 'dt_polys' in first:
+                    dt_polys = first.get('dt_polys') or []
+                    for poly in dt_polys:
+                        poly_array = np.array(poly, dtype=np.float32)
+                        x0 = int(max(0, np.min(poly_array[:, 0])));
+                        y0 = int(max(0, np.min(poly_array[:, 1])))
+                        x1 = int(min(img.width, np.max(poly_array[:, 0])));
+                        y1 = int(min(img.height, np.max(poly_array[:, 1])))
+                        if x1 > x0 and y1 > y0:
+                            crop = img.crop((x0, y0, x1, y1))
+                            out.append((poly_array, crop))
 
-                        if dt_polys:
-                            for poly in dt_polys:
-                                poly_array = np.array(poly, dtype=np.float32)
-
-                                x0 = int(max(0, np.min(poly_array[:, 0])))
-                                y0 = int(max(0, np.min(poly_array[:, 1])))
-                                x1 = int(min(img.width, np.max(poly_array[:, 0])))
-                                y1 = int(min(img.height, np.max(poly_array[:, 1])))
-
-                                if x1 > x0 and y1 > y0:
-                                    crop = img.crop((x0, y0, x1, y1))
-                                    out.append((poly_array, crop))
-                    except KeyError:
-                        pass
+                # Legacy list-of-polygons: [[poly1, poly2, ...]]  (what the test returns)
+                elif isinstance(first, list) and first and isinstance(first[0], (list, tuple)):
+                    for poly in first:
+                        poly_array = np.array(poly, dtype=np.float32)
+                        x0 = int(max(0, np.min(poly_array[:, 0])));
+                        y0 = int(max(0, np.min(poly_array[:, 1])))
+                        x1 = int(min(img.width, np.max(poly_array[:, 0])));
+                        y1 = int(min(img.height, np.max(poly_array[:, 1])))
+                        if x1 > x0 and y1 > y0:
+                            crop = img.crop((x0, y0, x1, y1))
+                            out.append((poly_array, crop))
 
             log.info(f"paddle:detect boxes={len(out)}")
 

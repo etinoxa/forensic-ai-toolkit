@@ -46,7 +46,7 @@ def _cfg_to_kwargs(cfg: Optional[Any]) -> Dict[str, Any]:
         return {}
     if isinstance(cfg, dict):
         return dict(cfg)
-    if hasattr(cfg, "__dict__"):       # dataclass / SimpleNamespace / object
+    if hasattr(cfg, "__dict__"):
         return {k: v for k, v in vars(cfg).items() if not k.startswith("_")}
     return {}
 

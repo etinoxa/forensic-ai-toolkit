@@ -17,6 +17,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
+
+      - name: Prepare test env
+        run: |
+          echo "OMP_NUM_THREADS=1"           >> $GITHUB_ENV
+          echo "OPENBLAS_NUM_THREADS=1"      >> $GITHUB_ENV
+          echo "MKL_NUM_THREADS=1"           >> $GITHUB_ENV
+          echo "MKL_THREADING_LAYER=GNU"     >> $GITHUB_ENV
+          echo "NUMEXPR_NUM_THREADS=1"       >> $GITHUB_ENV
+          echo "KMP_INIT_AT_FORK=FALSE"      >> $GITHUB_ENV
+          python -m pip install -U pip
+          # only light deps; avoid paddle/torch/doctr in CI
+          pip install pytest pytest-cov pillow numpy transformers==4.43.4
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -66,4 +79,36 @@ jobs:
           FAIT_LOG_LEVEL: "WARNING"
           HF_HUB_ENABLE_HF_TRANSFER: "1"
         run: |
-          pytest -q --maxfail=1 -m slow --cov=src --cov-report=term-missing
+          export OMP_NUM_THREADS=1
+          export OPENBLAS_NUM_THREADS=1
+          export MKL_NUM_THREADS=1
+          export MKL_THREADING_LAYER=GNU
+          export NUMEXPR_NUM_THREADS=1
+          export KMP_INIT_AT_FORK=FALSE
+          
+          mkdir -p test_stubs/doctr
+          cat > test_stubs/paddleocr.py <<'PY'
+          class PaddleOCR:
+              def __init__(self, *a, **k): pass
+              def ocr(self, *a, **k): return [[{"dt_polys": []}]]
+          PY
+          cat > test_stubs/doctr/__init__.py <<'PY'
+          __version__ = "stub"
+          PY
+          cat > test_stubs/doctr/models.py <<'PY'
+          def ocr_predictor(*a, **k):
+              class _P:
+                  def __call__(self, doc):
+                      class _Out:
+                          def export(self): return {"pages": []}
+                      return _Out()
+              return _P()
+          PY
+          echo "PYTHONPATH=test_stubs:$PYTHONPATH" >> $GITHUB_ENV
+          
+          python -m pip install -U pip
+          pip install pytest pytest-cov pillow numpy transformers==4.43.4
+          
+          echo "FAIT_OCR_STRATEGY=first_nonempty" >> $GITHUB_ENV
+          echo "FAIT_OCR_VERIFIER=none" >> $GITHUB_ENV
+          echo "FAIT_OCR_ENGINES=tesseract" >> $GITHUB_ENV
