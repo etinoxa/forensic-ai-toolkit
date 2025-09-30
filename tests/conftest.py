@@ -23,10 +23,14 @@ def tmp_paths(tmp_path, monkeypatch):
     return p
 
 def _install_torch_stub():
+    import types, sys
     torch = types.ModuleType("torch")
+
     class _Cuda:
         @staticmethod
         def is_available(): return False
+    torch.cuda = _Cuda()
+
     def _noop_ctx(*a, **k):
         class _C:
             def __enter__(self): return None
@@ -35,14 +39,21 @@ def _install_torch_stub():
     def _decorator(*a, **k):
         def _wrap(fn): return fn
         return _wrap
-    torch.cuda = _Cuda()
-    torch.inference_mode = _decorator
     torch.no_grad = _noop_ctx
-    # minimal tensor-ish helpers some libs may look for
+    torch.inference_mode = _decorator
+
     class _Tensor:
         def to(self, *a, **k): return self
         def eval(self): return self
     torch.Tensor = _Tensor
+
+    # NEW: no-op persistence funcs
+    def _save(*a, **k): return None
+    def _load(*a, **k): return None
+    torch.save = _save
+    torch.load = _load
+
+    torch.__version__ = "0.0.stub"
     sys.modules["torch"] = torch
 
 def _install_paddleocr_stub():
@@ -90,3 +101,20 @@ if os.getenv("GITHUB_ACTIONS") == "true" or os.getenv("CI") == "true":
     _install_torch_stub()
     _install_paddleocr_stub()
     _install_doctr_stub()
+
+    import types
+
+    ultra = types.ModuleType("ultralytics")
+
+
+    class YOLO:
+        def __init__(self, *a, **k): pass
+
+        # match common calls in code/tests
+        def predict(self, *a, **k): return []
+
+        def __call__(self, *a, **k): return []
+
+
+    ultra.YOLO = YOLO
+    sys.modules["ultralytics"] = ultra
