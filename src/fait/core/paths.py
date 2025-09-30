@@ -45,9 +45,12 @@ class FaitPaths:
     fait_root: Path
     cache_root: Path
     models_cache: Path
-    models_face_match: Path
-    models_object_screen: Path
+    models_vision: Path
+    models_facial_recognition: Path
+    models_object_detection: Path
+    models_ocr: Path
     models_audio: Path
+    models_speaker_recognition: Path
     models_llm: Path
     logs: Path
     outputs: Path
@@ -62,14 +65,19 @@ def get_paths() -> FaitPaths:
     fait_root = root / ".fait"
     cache_root = fait_root / "cache"
     models_cache = cache_root / "models"
+    models_vision = models_cache / "vision"
+    models_audio = models_cache / "audio"
     return FaitPaths(
         repo_root=root,
         fait_root=fait_root,
         cache_root=cache_root,
         models_cache=models_cache,
-        models_face_match=models_cache / "face_match",
-        models_object_screen=models_cache / "object_screen",
-        models_audio=models_cache / "audio",
+        models_vision=models_vision,
+        models_facial_recognition=models_vision / "facial_recognition",
+        models_object_detection=models_vision / "object_detection",
+        models_ocr=models_vision / "ocr",
+        models_audio=models_audio,
+        models_speaker_recognition=models_audio / "speaker_recognition",
         models_llm=models_cache / "llm",
         logs=Path(os.getenv("FAIT_LOGS_DIR", str(fait_root / "logs"))),
         outputs=Path(os.getenv("FAIT_OUTPUTS_DIR", str(fait_root / "outputs"))),

@@ -2,15 +2,14 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
-import os, re, io, json, hashlib, pickle, math, tempfile, logging
+import os, re, hashlib, pickle, math, tempfile
 from pathlib import Path
 from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union, Mapping
 import logging, json, time
 import subprocess
 import numpy as np
 
-from fait.vision.ocr.config import OcrConfig, FusionCfg, load_ocr_config, EngineCfg
-
+from fait.vision.ocr.models.config import OcrConfig, FusionCfg
 
 log = logging.getLogger("fait.vision.core.utils")
 # ───────────────────────────── Filesystem & IO ─────────────────────────────
@@ -480,7 +479,7 @@ def resolve_engine_order(cfg, strategy: str) -> list[str]:
     if not raw:
         return yaml_order
 
-    # 4) normalize names and filter to enabled engines
+    # 4) normalize names and filter to enabled models
     #    (accept common aliases and a few typos)
     alias = {
         "paddleocr": "paddle",
@@ -508,8 +507,8 @@ def resolve_engine_order(cfg, strategy: str) -> list[str]:
 
 def sanitize_engine_order(cfg: OcrConfig) -> List[str]:
     """
-    Keep only enabled engines, preserve the user-specified order.
-    cfg.engines is normalized to dicts later so we can .get('enabled', True).
+    Keep only enabled models, preserve the user-specified order.
+    cfg.models is normalized to dicts later so we can .get('enabled', True).
     """
     enabled = {
         name for name, e in (cfg.engines or {}).items()
@@ -728,7 +727,7 @@ def write_report_ocr(
         tag = strategy or "ocr"
 
     run_name = f"{tag}_{stamp}"
-    run_dir = Path(outputs_root) / "ocr" / run_name
+    run_dir = Path(outputs_root) / "vision" /"ocr" / run_name
     if ensure_dir:
         run_dir.mkdir(parents=True, exist_ok=True)
 

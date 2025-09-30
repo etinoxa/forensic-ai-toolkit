@@ -9,7 +9,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 from PIL import Image
 
 from fait.core.paths import get_paths
@@ -23,12 +22,12 @@ from fait.core.utils import (
     write_report_ocr,
 )
 # One true config types & loader
-from fait.vision.ocr.config import OcrConfig, FusionCfg, load_ocr_config
-# Engine factory (do NOT import the module named `engines` to avoid name clashes)
-import fait.vision.ocr.engines as engreg
+from fait.vision.ocr.models.config import OcrConfig, FusionCfg, load_ocr_config
+# Engine factory (do NOT import the module named `models` to avoid name clashes)
+import fait.vision.ocr.models as engreg
 
 # if not hasattr(get_engine, "get_engine"):
-#     from fait.vision.ocr.engines import get_engine as _get_engine
+#     from fait.vision.ocr.models import get_engine as _get_engine
 #     get_engine.get_engine = _get_engine
 
 
@@ -140,16 +139,6 @@ def run_ocr(cfg: OcrConfig) -> Dict:
     t0 = time.time()
     paths = get_paths()
 
-    # Point Paddle caches to project cache BEFORE any engine construction
-    try:
-        ocr_cache = paths.models_cache / "ocr"
-        ensure_folder(ocr_cache)
-        os.environ["PADDLEX_HOME"] = str(ocr_cache)
-        os.environ["PPOCR_HOME"] = str(ocr_cache)
-        os.environ.setdefault("PADDLEHUB_HOME", str(ocr_cache))
-    except Exception:
-        pass
-
     # Normalize nested config
     if isinstance(getattr(cfg, "fusion", None), dict):
         cfg.fusion = FusionCfg(**cfg.fusion)  # type: ignore[assignment]
@@ -182,7 +171,7 @@ def run_ocr(cfg: OcrConfig) -> Dict:
     # -------- engine order (enabled only) --------
     order = resolve_engine_order(cfg, strategy)
     if not order:
-        raise RuntimeError("No OCR engines available/enabled after config filtering.")
+        raise RuntimeError("No OCR models available/enabled after config filtering.")
 
     enabled = [k for k, v in (cfg.engines or {}).items() if v.get("enabled", True)]
     log.info("%s %s", "ocr:engines_enabled", json.dumps({
@@ -447,17 +436,6 @@ def run_ocr(cfg: OcrConfig) -> Dict:
                         if text:
                             best_text, best_conf, best_lang, best_notes = text, conf, lang_used, f"{notes};rot={rot}"
                             break  # two-stage is single-result per rotation
-
-                    #Works with _direct_paddle_detect_and_ocr
-                    # elif strategy == "detector_only":
-                    #     lang = (cfg.engines.get(verifier) or {}).get("lang", "auto")
-                    #
-                    #     # Use direct PaddleOCR instead of engine wrapper
-                    #     text, conf, lang_used, notes = _direct_paddle_detect_and_ocr(img, verifier, lang)
-                    #
-                    #     log.info("ocr:stage_out", extra={"strategy": strategy, "rot": rot, "len": len(text or "")})
-                    #     if text:
-                    #         best_text, best_conf, best_lang, best_notes = text, conf, lang_used, f"{notes};rot={rot}"
 
                     elif strategy == "detector_only":
                         # Add this line to define lang
