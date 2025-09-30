@@ -6,7 +6,7 @@ from langchain_core.tools import Tool
 from langchain_core.tools import StructuredTool
 
 from fait.core.registry import get_embedder
-from fait.vision.pipelines.face_match import run_face_match
+from fait.vision.pipelines.facial_recognition_pipeline import run_facial_recognition
 
 # ----- Tool schemas -----
 
@@ -95,7 +95,7 @@ def _run_face_match_validated(args: FaceMatchInput) -> Dict[str, Any]:
         metric = "cosine" if args.model == "clip" else "euclidean"
 
     emb = get_embedder(args.model)
-    result = run_face_match(
+    result = run_facial_recognition(
         embedder=emb,
         reference_dir=args.reference_dir,
         gallery_dir=args.gallery_dir,
@@ -145,7 +145,7 @@ def _face_match(args: FaceMatchInput) -> Dict[str, Any]:
         metric = "cosine" if args.model == "clip" else "euclidean"
 
     emb = get_embedder(args.model)
-    result = run_face_match(
+    result = run_facial_recognition(
         embedder=emb,
         reference_dir=args.reference_dir,
         gallery_dir=args.gallery_dir,

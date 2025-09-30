@@ -13,9 +13,10 @@ def tmp_paths(tmp_path, monkeypatch):
         fait_root=tmp_path / ".fait",
         cache_root=tmp_path / ".fait" / "cache",
         models_cache=tmp_path / ".fait" / "cache" / "models",
-        models_face_match=tmp_path / ".fait" / "cache" / "models" / "face_match",
-        models_object_screen=tmp_path / ".fait" / "cache" / "models" / "object_screen",
-        embeddings_cache=tmp_path / ".fait" / "cache" / "embeddings",
+        models_facial_recognition=tmp_path / ".fait" / "cache" / "models" / "vision" / "face_match",
+        models_object_detection=tmp_path / ".fait" / "cache" / "models" / "vision" / "object_screen",
+        models_ocr=tmp_path / ".fait" / "cache" / "models" / "vision"/"ocr",
+        embeddings_cache=tmp_path / ".fait" / "cache" / "models",
         outputs=tmp_path / ".fait" / "outputs",
         logs=tmp_path / ".fait" / "logs",
     )

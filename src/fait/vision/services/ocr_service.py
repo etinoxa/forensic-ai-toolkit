@@ -42,7 +42,7 @@ class OcrService:
     def __init__(self, cfg: OcrServiceCfg = OcrServiceCfg()):
         self.cfg = cfg
         self.paths = get_paths()
-        self.cache_dir = (self.paths.models_cache / "ocr")
+        self.cache_dir = str(self.paths.models_ocr)
         ensure_folder(self.cache_dir)
         self._pool: Dict[Tuple[str, str], OcrEngine] = {}
 
@@ -53,23 +53,23 @@ class OcrService:
             return self._pool[key]
 
         if n == "tesseract":
-            from fait.vision.ocr.engines.tesseract_engine import TesseractEngine
+            from fait.vision.ocr.models.tesseract_engine import TesseractEngine
             c = self.cfg.tesseract
             eng = TesseractEngine(lang=c.lang, tesseract_cmd=c.tesseract_cmd, psm=c.psm, oem=c.oem)
         elif n == "paddle":
-            from fait.vision.ocr.engines.paddle_engine import PaddleEngine
+            from fait.vision.ocr.models.paddle_engine import PaddleEngine
             c = self.cfg.paddle
             eng = PaddleEngine(lang=c.lang)
         elif n == "trocr":
-            from fait.vision.ocr.engines.trocr_engine import TrOCREngine
+            from fait.vision.ocr.models.trocr_engine import TrOCREngine
             c = self.cfg.trocr
             eng = TrOCREngine(model_id=c.model_id, cache_dir=str(self.cache_dir))
         elif n == "donut":
-            from fait.vision.ocr.engines.donut_engine import DonutEngine
+            from fait.vision.ocr.models.donut_engine import DonutEngine
             c = self.cfg.donut
             eng = DonutEngine(model_id=c.model_id, cache_dir=str(self.cache_dir))
         elif n == "doctr":
-            from fait.vision.ocr.engines.doctr_engine import DocTREngine
+            from fait.vision.ocr.models.doctr_engine import DocTREngine
             c = self.cfg.doctr
             eng = DocTREngine(det_arch=c.det_arch, reco_arch=c.reco_arch)
         else:
