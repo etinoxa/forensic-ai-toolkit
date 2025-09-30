@@ -91,8 +91,6 @@ class PaddleEngine:
         try:
             result = self._impl.ocr(im)
 
-            result = self._impl.ocr(im)
-
             if result and isinstance(result, list) and result[0]:
                 first = result[0]
 
