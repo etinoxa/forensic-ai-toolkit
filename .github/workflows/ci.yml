@@ -6,6 +6,16 @@ on:
   workflow_dispatch:
 
 jobs:
+  #  act_runner
+  echo:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Hello from $GITHUB_WORKFLOW on $GITHUB_REF"
+
   unit:
     runs-on: ubuntu-latest
     strategy:
