@@ -42,9 +42,14 @@ def is_video_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_VIDEO_EXTS) 
     p = str(path).lower()
     return Path(path).is_file() and p.endswith(exts)
 
-def is_audio_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_AUDIO_EXTS) -> bool:
+def has_audio_extension(path: str | Path, exts: tuple[str, ...] = DEFAULT_AUDIO_EXTS) -> bool:
+    """Check if path has an audio file extension (doesn't check if file exists)"""
     p = str(path).lower()
-    return Path(path).is_file() and p.endswith(exts)
+    return p.endswith(exts)
+
+def is_audio_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_AUDIO_EXTS) -> bool:
+    """Check if path is an existing audio file"""
+    return Path(path).is_file() and has_audio_extension(path, exts)
 
 # --- Audio loading helpers (FFmpeg fallback via imageio-ffmpeg) ---
 def load_audio_ffmpeg(
@@ -962,7 +967,7 @@ def human_size(n_bytes: float | int, si: bool = False) -> str:
 __all__ = [
     # IO & FS
     "ensure_folder", "is_image_file", "is_video_file", "walk_files",
-    "to_safe_filename", "write_jsonl", is_audio_file, "append_jsonl",
+    "to_safe_filename", "write_jsonl", is_audio_file, "append_jsonl", "has_audio_extension",
     # Hashing / cache
     "sha256_file", "cache_path", "save_embedding", "load_embedding", "save_numpy", "file_md5",
     # Math / metrics

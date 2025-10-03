@@ -1,4 +1,4 @@
-# Which recognizer to use
+# configs/vision/face_match.yaml
 recognizer: arcface        # arcface | clip
 
 # Where (optional; relative to repo root or absolute)

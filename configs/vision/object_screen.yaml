@@ -1,3 +1,4 @@
+#configs/vision/object_screen.yaml
 strategy: auto
 verifier: auto            # gdino_only | detector_only | two_stage
 prompts: ["person with weapon", "gun", "knife"]

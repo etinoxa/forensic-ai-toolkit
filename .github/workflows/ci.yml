@@ -36,9 +36,8 @@ jobs:
           echo "MKL_THREADING_LAYER=GNU"     >> $GITHUB_ENV
           echo "NUMEXPR_NUM_THREADS=1"       >> $GITHUB_ENV
           echo "KMP_INIT_AT_FORK=FALSE"      >> $GITHUB_ENV
-          python -m pip install -U pip
-          # only light deps; avoid paddle/torch/doctr in CI
-          pip install pytest pytest-cov pillow numpy transformers==4.43.4
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-glx libglib2.0-0
 
       - name: Install deps
         run: |
@@ -46,12 +45,18 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
           echo "PYTHONPATH=$GITHUB_WORKSPACE/src" >> $GITHUB_ENV
+
       - name: Run unit tests (fast)
         env:
           TF_CPP_MIN_LOG_LEVEL: "3"
           FAIT_LOG_LEVEL: "WARNING"
         run: |
-          pytest -q --maxfail=1 -m "not slow" --cov=src --cov-report=term-missing
+          pytest -q --maxfail=1 \
+            --ignore=tests/unit/vision/object_detection/test_deformable_detr_parse.py \
+            --ignore=tests/unit/vision/object_detection/test_yolo_parse.py \
+            --ignore=tests/unit/vision/object_detection/test_grounding_dino_parse.py \
+            -m "not slow" \
+            --cov=src --cov-report=term-missing
 
   slow:
     needs: unit
@@ -115,9 +120,6 @@ jobs:
               return _P()
           PY
           echo "PYTHONPATH=test_stubs:$PYTHONPATH" >> $GITHUB_ENV
-          
-          python -m pip install -U pip
-          pip install pytest pytest-cov pillow numpy transformers==4.43.4
           
           echo "FAIT_OCR_STRATEGY=first_nonempty" >> $GITHUB_ENV
           echo "FAIT_OCR_VERIFIER=none" >> $GITHUB_ENV

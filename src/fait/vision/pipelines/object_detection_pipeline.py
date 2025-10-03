@@ -12,10 +12,6 @@ from PIL import Image
 
 from fait.core.paths import get_paths
 from fait.core.utils import ProgressMeter, ensure_folder, file_md5, write_object_report, fuse_scores
-from fait.vision.services.object_detection_service import get_object_service
-from fait.vision.object_detection.models.grounding_dino import GDINOConfig
-from fait.vision.object_detection.models.deformable_detr import DefDETRConfig
-from fait.vision.object_detection.models.yolo import YoloConfig
 
 log = logging.getLogger("fait.vision.pipelines.object_detection")
 
@@ -65,6 +61,13 @@ class DetectorOnlyConfig:
 
 @dataclass
 class ScreenConfig:
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        from fait.vision.object_detection.models.grounding_dino import GDINOConfig
+        from fait.vision.object_detection.models.deformable_detr import DefDETRConfig
+        from fait.vision.object_detection.models.yolo import YoloConfig
+
     prompts: List[str]
     gallery_dir: str
     output_dir: Optional[str] = None
@@ -77,9 +80,9 @@ class ScreenConfig:
     strategy: Literal["gdino_only", "detector_only", "two_stage", "auto"] = "two_stage"
     verifier: Literal["none", "deformable_detr", "yolo", "auto"] = "deformable_detr"
 
-    gdino: GDINOConfig = GDINOConfig()
-    detr: DefDETRConfig = DefDETRConfig()
-    yolo: YoloConfig = YoloConfig()
+    gdino: "GDINOConfig" = None
+    detr: "DefDETRConfig" = None
+    yolo: "YoloConfig" = None
     fusion: FusionConfig = FusionConfig()
     detector_only: DetectorOnlyConfig = DetectorOnlyConfig()
 
@@ -132,8 +135,23 @@ def _crop(img: Image.Image, xyxy) -> Image.Image:
     return img.crop((x1, y1, x2, y2))
 
 def run_object_detection(cfg: ScreenConfig) -> Dict:
+    from fait.vision.services.object_detection_service import get_object_service
+    from fait.vision.object_detection.models.grounding_dino import GDINOConfig
+    from fait.vision.object_detection.models.deformable_detr import DefDETRConfig
+    from fait.vision.object_detection.models.yolo import YoloConfig
+
+    # Initialize defaults if needed
+    if cfg.gdino is None:
+        cfg.gdino = GDINOConfig()
+    if cfg.detr is None:
+        cfg.detr = DefDETRConfig()
+    if cfg.yolo is None:
+        cfg.yolo = YoloConfig()
+
     t0 = time.time()
     paths = get_paths()
+
+    from fait.vision.services.object_detection_service import get_object_service
 
     env_prog = os.getenv("FAIT_PROGRESS", "").strip().lower()
     if env_prog in {"tqdm", "log", "none"}:

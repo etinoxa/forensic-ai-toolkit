@@ -1,4 +1,6 @@
 # tests/unit/vision/test_grounding_dino_parse.py
+import pytest
+pytestmark = pytest.mark.requires_models
 from PIL import Image
 import fait.core.paths as paths_mod
 import fait.vision.object_detection.models.grounding_dino as gdimod
