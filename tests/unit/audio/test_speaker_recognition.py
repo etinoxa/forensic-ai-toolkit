@@ -10,6 +10,29 @@ from fait.audio.pipelines.speaker_recognition_pipeline import (
     TwoStageCfg,
     ThreeStageCfg,
 )
+from fait.core.app_config import get_app_config, FaitConfig, AudioConfig, AudioStrategyConfig
+
+
+@pytest.fixture
+def mock_audio_config(monkeypatch):
+    """Provide a clean, predictable audio config for tests"""
+    mock_config = FaitConfig(
+        audio=AudioConfig(
+            speaker_recognition=AudioStrategyConfig(
+                strategy="two_stage",
+                detector="titanet",
+                tertiary="none",
+                fusion_method="weighted",
+                alpha=0.60,
+                tau_star=0.70
+            )
+        )
+    )
+    monkeypatch.setattr("fait.core.app_config._app_config", mock_config)
+    # Force reload
+    from fait.core.app_config import get_app_config
+    monkeypatch.setattr("fait.core.app_config.get_app_config", lambda reload=False: mock_config)
+    return mock_config
 
 
 class TestCosineSimplified:
@@ -43,7 +66,12 @@ class TestCosineSimplified:
 class TestStrategyResolution:
     """Test speaker recognition strategy resolution"""
 
-    def test_auto_resolves_to_two_stage(self):
+    def test_app_config_audio_defaults(self, mock_audio_config):
+        from fait.core.app_config import get_app_config
+        cfg = get_app_config()
+        assert cfg.audio.speaker_recognition.strategy == "two_stage"
+
+    def test_auto_resolves_to_two_stage(self, mock_audio_config):
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
@@ -56,7 +84,7 @@ class TestStrategyResolution:
         assert detector in {"titanet", "wavlm"}
         assert tertiary == "none"
 
-    def test_speechbrain_only_no_detector(self):
+    def test_speechbrain_only_no_detector(self, mock_audio_config):
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
@@ -69,7 +97,7 @@ class TestStrategyResolution:
         assert detector == "none"
         assert tertiary == "none"
 
-    def test_titanet_only_no_detector(self):
+    def test_titanet_only_no_detector(self, mock_audio_config):
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
@@ -82,7 +110,7 @@ class TestStrategyResolution:
         assert detector == "none"
         assert tertiary == "none"
 
-    def test_detector_only_requires_detector(self):
+    def test_detector_only_requires_detector(self, mock_audio_config):
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
@@ -95,7 +123,7 @@ class TestStrategyResolution:
         assert detector in {"titanet", "wavlm"}
         assert tertiary == "none"
 
-    def test_two_stage_requires_detector(self):
+    def test_two_stage_requires_detector(self, mock_audio_config):
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
@@ -108,7 +136,7 @@ class TestStrategyResolution:
         assert detector in {"titanet", "wavlm"}
         assert tertiary == "none"
 
-    def test_three_stage_requires_both(self):
+    def test_three_stage_requires_both(self, mock_audio_config):
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
@@ -121,7 +149,7 @@ class TestStrategyResolution:
         assert detector == "titanet"
         assert tertiary == "wavlm"  # Should pick the other one
 
-    def test_three_stage_swaps_if_same(self):
+    def test_three_stage_swaps_if_same(self, mock_audio_config):
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
@@ -134,7 +162,7 @@ class TestStrategyResolution:
         assert detector == "titanet"
         assert tertiary == "wavlm"  # Should be different from detector
 
-    def test_env_override_all_auto(self, monkeypatch):
+    def test_env_override_all_auto(self, mock_audio_config, monkeypatch):
         monkeypatch.setenv("FAIT_AUDIO_STRATEGY", "three_stage")
         monkeypatch.setenv("FAIT_AUDIO_DETECTOR", "wavlm")
         monkeypatch.setenv("FAIT_AUDIO_TERTIARY", "titanet")
@@ -153,7 +181,7 @@ class TestStrategyResolution:
         assert detector == "wavlm"
         assert tertiary == "titanet"
 
-    def test_explicit_config_wins_when_not_auto(self, monkeypatch):
+    def test_explicit_config_wins_when_not_auto(self, mock_audio_config, monkeypatch):
         monkeypatch.setenv("FAIT_AUDIO_STRATEGY", "three_stage")
         monkeypatch.setenv("FAIT_AUDIO_DETECTOR", "wavlm")
 
@@ -286,16 +314,56 @@ class TestFusionLogic:
 class TestAudioFileHandling:
     """Test audio file type detection"""
 
-    def test_audio_extensions(self):
+    def test_audio_extensions(self, tmp_path):
+        """Test audio extension detection with actual files"""
         from fait.core.utils import is_audio_file
 
-        assert is_audio_file(Path("test.wav")) is True
-        assert is_audio_file(Path("test.mp3")) is True
-        assert is_audio_file(Path("test.m4a")) is True
-        assert is_audio_file(Path("test.flac")) is True
-        assert is_audio_file(Path("test.ogg")) is True
+        # Create temporary audio files
+        wav_file = tmp_path / "test.wav"
+        mp3_file = tmp_path / "test.mp3"
+        m4a_file = tmp_path / "test.m4a"
+        flac_file = tmp_path / "test.flac"
+        ogg_file = tmp_path / "test.ogg"
 
-        # Not audio
-        assert is_audio_file(Path("test.txt")) is False
-        assert is_audio_file(Path("test.mp4")) is False
-        assert is_audio_file(Path("test.jpg")) is False
+        # Create empty files
+        for f in [wav_file, mp3_file, m4a_file, flac_file, ogg_file]:
+            f.touch()
+
+        # Test audio files are detected
+        assert is_audio_file(wav_file) is True
+        assert is_audio_file(mp3_file) is True
+        assert is_audio_file(m4a_file) is True
+        assert is_audio_file(flac_file) is True
+        assert is_audio_file(ogg_file) is True
+
+    def test_non_audio_extensions(self, tmp_path):
+        """Test non-audio files are rejected"""
+        from fait.core.utils import is_audio_file
+
+        # Create non-audio files
+        txt_file = tmp_path / "test.txt"
+        mp4_file = tmp_path / "test.mp4"
+        jpg_file = tmp_path / "test.jpg"
+
+        for f in [txt_file, mp4_file, jpg_file]:
+            f.touch()
+
+        assert is_audio_file(txt_file) is False
+        assert is_audio_file(mp4_file) is False
+        assert is_audio_file(jpg_file) is False
+
+    def test_extension_check_only(self):
+        """Test has_audio_extension (doesn't require file to exist)"""
+        from fait.core.utils import has_audio_extension
+
+        # Extension check doesn't require file existence
+        assert has_audio_extension("test.wav") is True
+        assert has_audio_extension("test.mp3") is True
+        assert has_audio_extension("test.m4a") is True
+        assert has_audio_extension("test.flac") is True
+        assert has_audio_extension("test.ogg") is True
+
+        # Non-audio extensions
+        assert has_audio_extension("test.txt") is False
+        assert has_audio_extension("test.mp4") is False
+        assert has_audio_extension("test.jpg") is False

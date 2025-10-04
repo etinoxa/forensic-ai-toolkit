@@ -431,84 +431,116 @@ def topk_pairs(pairs: List[Tuple[str, float]], k: int, higher_is_better: bool) -
 
 # ───────────────────────────── Strategy / Verifier/ Engine Order ─────────────────────────────
 def resolve_strategy_verifier(fu: FusionCfg) -> tuple[str, str]:
+    """
+    Resolve OCR strategy and verifier with proper precedence:
+
+    1. Explicit non-"auto" values (highest priority)
+    2. Environment variables (for testing/CI)
+    3. Application config from config.yaml
+    4. Hard-coded defaults
+    """
     import os
+    from fait.core.app_config import get_app_config
 
-    # 1) read YAML
-    strategy = (fu.strategy or "first_nonempty").lower()
-    verifier = (fu.verifier or "none").lower()
+    # 1) Read from fusion config
+    strategy = (fu.strategy or "auto").lower()
+    verifier = (fu.verifier or "auto").lower()
 
-    # 2) read env (both prefixes supported)
-    env_s = (os.getenv("OCR_STRATEGY") or os.getenv("FAIT_OCR_STRATEGY") or "").strip().lower()
-    env_v = (os.getenv("OCR_VERIFIER") or os.getenv("FAIT_OCR_VERIFIER") or "").strip().lower()
+    # 2) If both auto, check environment then application config
+    if strategy == "auto" and verifier == "auto":
+        env_s = os.getenv("FAIT_OCR_STRATEGY", "").strip().lower()
+        env_v = os.getenv("FAIT_OCR_VERIFIER", "").strip().lower()
 
-    allowed_strats = {
-        "first_nonempty", "best_of", "consensus",
-        "two_stage", "detector_only",
-    }
-    allowed_verifiers = {"tesseract", "trocr", "doctr", "donut", "paddle", "none"}
+        if env_s or env_v:
+            # Environment override
+            strategy = env_s or "auto"
+            verifier = env_v or "auto"
+        else:
+            # Load from application config
+            app_config = get_app_config()
+            strategy = app_config.vision.ocr.strategy
+            verifier = app_config.vision.ocr.verifier
 
-    # 3) env wins if valid (keep your preferred precedence; this is the simple version)
-    if env_s in allowed_strats:
-        strategy = env_s
-    if env_v in allowed_verifiers:
-        verifier = env_v
+    # 3) Apply defaults for any remaining "auto"
+    if strategy == "auto":
+        strategy = "first_nonempty"
+    if verifier == "auto":
+        verifier = "none"
 
-    # 4) hard rule: these strategies never use a verifier
+    # 4) Validation: these strategies never use a verifier
     if strategy in {"first_nonempty", "best_of", "consensus"}:
         verifier = "none"
 
-    # 5) light validation for the other strategies
+    # 5) Validation for strategies that need verifiers
     if strategy == "two_stage" and verifier not in {"tesseract", "trocr", "doctr", "donut"}:
-        verifier = "tesseract"  # sensible default
+        verifier = "tesseract"
     if strategy == "detector_only" and verifier not in {"paddle", "tesseract", "trocr", "doctr", "donut"}:
-        verifier = "paddle"     # sensible default
+        verifier = "paddle"
 
     return strategy, verifier
 
 def resolve_engine_order(cfg, strategy: str) -> list[str]:
     """
-    Resolve engine order with an env override (only for first_nonempty/best_of/consensus).
-    Env variables checked: FAIT_OCR_ENGINES, OCR_ENGINES.
-    YAML wins if env unset.
+    Resolve engine order with proper precedence:
+
+    1. Environment variable (for testing/CI) - only for first_nonempty/best_of/consensus
+    2. Pipeline YAML (cfg.engine_order) - per-run override
+    3. Application config (config.yaml) - application default
+    4. Hard-coded fallback
     """
-    # 1) start from YAML (enabled-only, existing helper)
+    import os
+    from fait.core.app_config import get_app_config
+
+    # 1) Check if pipeline YAML provided an explicit order
     yaml_order = sanitize_engine_order(cfg)
 
-    # 2) only these strategies can be overridden
+    # 2) Only allow env override for these strategies
     overridable = {"first_nonempty", "best_of", "consensus"}
     if strategy not in overridable:
-        return yaml_order
+        # For two_stage/detector_only, use YAML or app config
+        if yaml_order:
+            return yaml_order
+        # Fall back to app config
+        app_config = get_app_config()
+        return [e for e in app_config.vision.ocr.engine_order  # ← Changed from .engines
+                if e in (cfg.engines or {})]
 
-    # 3) read env list (if any)
+    # 3) Check environment variable (testing override)
     raw = (os.getenv("FAIT_OCR_ENGINES") or os.getenv("OCR_ENGINES") or "").strip()
-    if not raw:
+    if raw:
+        alias = {
+            "paddleocr": "paddle",
+            "paddle": "paddle",
+            "tesseract": "tesseract",
+            "trocr": "trocr",
+            "doctr": "doctr",
+            "donut": "donut",
+            "donot": "donut",
+        }
+        enabled = {n for n, e in (cfg.engines or {}).items()
+                   if (isinstance(e, dict) and e.get("enabled", True))
+                   or (not isinstance(e, dict) and getattr(e, "enabled", True))}
+        desired = []
+        for token in raw.split(","):
+            key = alias.get(token.strip().lower())
+            if key and key in enabled and key in (cfg.engines or {}):
+                desired.append(key)
+
+        if desired:
+            log.info("ocr:engine_order_override", extra={"strategy": strategy, "order": desired, "source": "env"})
+            return desired
+
+    # 4) Use YAML if provided
+    if yaml_order:
+        log.info("ocr:engine_order", extra={"strategy": strategy, "order": yaml_order, "source": "yaml"})
         return yaml_order
 
-    # 4) normalize names and filter to enabled models
-    #    (accept common aliases and a few typos)
-    alias = {
-        "paddleocr": "paddle",
-        "paddle": "paddle",
-        "tesseract": "tesseract",
-        "trocr": "trocr",
-        "doctr": "doctr",
-        "donut": "donut",
-        "donot": "donut",     # common slip
-    }
-    enabled = {n for n, e in (cfg.engines or {}).items() if (isinstance(e, dict) and e.get("enabled", True)) or (not isinstance(e, dict) and getattr(e, "enabled", True))}
-    desired = []
-    for token in raw.split(","):
-        key = alias.get(token.strip().lower())
-        if key and key in enabled and key in (cfg.engines or {}):
-            desired.append(key)
-
-    # 5) if nothing valid, fall back to YAML
-    if not desired:
-        return yaml_order
-
-    # 6) log and return the override
-    log.info("ocr:engine_order_override", extra={"strategy": strategy, "order": desired})
-    return desired
+    # 5) Fall back to application config
+    app_config = get_app_config()
+    app_order = [e for e in app_config.vision.ocr.engine_order  # ← Changed from .engines
+                 if e in (cfg.engines or {})]
+    log.info("ocr:engine_order", extra={"strategy": strategy, "order": app_order, "source": "app_config"})
+    return app_order
 
 def sanitize_engine_order(cfg: OcrConfig) -> List[str]:
     """

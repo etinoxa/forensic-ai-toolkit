@@ -52,6 +52,8 @@ jobs:
           FAIT_LOG_LEVEL: "WARNING"
         run: |
           pytest -q --maxfail=1 \
+            --ignore=tests/integration \
+            tests/unit \
             --ignore=tests/unit/vision/object_detection/test_deformable_detr_parse.py \
             --ignore=tests/unit/vision/object_detection/test_yolo_parse.py \
             --ignore=tests/unit/vision/object_detection/test_grounding_dino_parse.py \

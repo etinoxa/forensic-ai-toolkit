@@ -12,7 +12,6 @@ from fait.audio.pipelines.speaker_recognition_pipeline import (
     SpeakerMatchConfig, _resolve_strategy,
 )
 
-
 class MockEmbedder:
     """Mock embedder that returns deterministic embeddings"""
 
@@ -41,7 +40,6 @@ class MockEmbedder:
         # Return fixed reference embedding
         return np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
-
 @pytest.fixture
 def mock_service():
     """Mock speaker service that returns mock embedders"""
@@ -53,7 +51,6 @@ def mock_service():
     service.get_wavlm = lambda model_id: MockEmbedder("wavlm")
 
     return service
-
 
 @pytest.fixture
 def audio_files(tmp_path):
@@ -76,7 +73,6 @@ def audio_files(tmp_path):
     (gal_dir / "other.wav").write_bytes(b"fake_audio")
 
     return ref_dir, gal_dir
-
 
 class TestSpeakerMatchPipeline:
     """Integration tests for speaker matching pipeline"""
@@ -190,54 +186,33 @@ class TestSpeakerMatchPipeline:
         with open(log_path, 'r') as f:
             lines = [json.loads(line) for line in f if line.strip()]
 
-
 class TestStrategyResolution:
-    def test_auto_resolves_to_two_stage(self, monkeypatch):
-        # Clear environment variables from .env file
+    def test_auto_uses_config_yaml(self, monkeypatch, tmp_path):
+        """When all are auto and no env vars, should load from config.yaml"""
+        # Clear environment
         monkeypatch.delenv("FAIT_AUDIO_STRATEGY", raising=False)
         monkeypatch.delenv("FAIT_AUDIO_DETECTOR", raising=False)
         monkeypatch.delenv("FAIT_AUDIO_TERTIARY", raising=False)
 
-        cfg = SpeakerMatchConfig(
-            reference_dir="/tmp/ref",
-            gallery_dir="/tmp/gal",
-            strategy="auto",
-            detector="auto",
-            tertiary="auto"
+        # Create a test config
+        test_config = tmp_path / "test_config.yaml"
+        test_config.write_text("""
+audio:
+  speaker_recognition:
+    strategy: three_stage
+    detector: titanet
+    tertiary: wavlm
+""")
+
+        # Mock the config loader to use our test config
+        from fait.core import app_config
+        monkeypatch.setattr(app_config, "_app_config", None)
+        original_load = app_config.FaitConfig.load
+        monkeypatch.setattr(
+            app_config.FaitConfig,
+            "load",
+            lambda path=None: original_load(test_config)
         )
-        strategy, detector, tertiary = _resolve_strategy(cfg)
-        assert strategy == "two_stage"
-        assert detector == "titanet"
-        assert tertiary == "none"
-
-    def test_explicit_config_ignores_env(self, monkeypatch):
-        # Set env vars that would normally override
-        monkeypatch.setenv("FAIT_AUDIO_STRATEGY", "speechbrain_only")
-        monkeypatch.setenv("FAIT_AUDIO_DETECTOR", "wavlm")
-
-        # But explicit (non-auto) config should NOT be overridden
-        cfg = SpeakerMatchConfig(
-            reference_dir="/tmp/ref",
-            gallery_dir="/tmp/gal",
-            strategy="two_stage",
-            detector="titanet",
-            tertiary="none"
-        )
-        strategy, detector, tertiary = _resolve_strategy(cfg)
-        assert strategy == "two_stage"
-        assert detector == "titanet"
-        assert tertiary == "none"
-
-    def test_env_overrides_when_all_auto(self, monkeypatch):
-        # Clear defaults first
-        monkeypatch.delenv("FAIT_AUDIO_STRATEGY", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_DETECTOR", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_TERTIARY", raising=False)
-
-        # Then set specific values
-        monkeypatch.setenv("FAIT_AUDIO_STRATEGY", "three_stage")
-        monkeypatch.setenv("FAIT_AUDIO_DETECTOR", "titanet")
-        monkeypatch.setenv("FAIT_AUDIO_TERTIARY", "wavlm")
 
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
@@ -251,88 +226,36 @@ class TestStrategyResolution:
         assert detector == "titanet"
         assert tertiary == "wavlm"
 
-    def test_speechbrain_only_clears_detector_and_tertiary(self, monkeypatch):
-        monkeypatch.delenv("FAIT_AUDIO_STRATEGY", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_DETECTOR", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_TERTIARY", raising=False)
+    def test_env_overrides_auto(self, monkeypatch):
+        """Environment variables override when cfg is auto"""
+        monkeypatch.setenv("FAIT_AUDIO_STRATEGY", "speechbrain_only")
+        monkeypatch.setenv("FAIT_AUDIO_DETECTOR", "none")
+        monkeypatch.setenv("FAIT_AUDIO_TERTIARY", "none")
 
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
-            strategy="speechbrain_only",
-            detector="titanet",  # should be cleared
-            tertiary="wavlm"  # should be cleared
+            strategy="auto",
+            detector="auto",
+            tertiary="auto"
         )
         strategy, detector, tertiary = _resolve_strategy(cfg)
         assert strategy == "speechbrain_only"
         assert detector == "none"
         assert tertiary == "none"
 
-    def test_titanet_only_clears_detector_and_tertiary(self, monkeypatch):
-        monkeypatch.delenv("FAIT_AUDIO_STRATEGY", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_DETECTOR", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_TERTIARY", raising=False)
+    def test_explicit_config_ignores_everything(self, monkeypatch):
+        """Explicit config values are never overridden"""
+        monkeypatch.setenv("FAIT_AUDIO_STRATEGY", "speechbrain_only")
 
         cfg = SpeakerMatchConfig(
             reference_dir="/tmp/ref",
             gallery_dir="/tmp/gal",
-            strategy="titanet_only",
-            detector="wavlm",
-            tertiary="titanet"
+            strategy="two_stage",  # Explicit, not "auto"
+            detector="titanet",
+            tertiary="none"
         )
         strategy, detector, tertiary = _resolve_strategy(cfg)
-        assert strategy == "titanet_only"
-        assert detector == "none"
+        assert strategy == "two_stage"  # Not overridden by env
+        assert detector == "titanet"
         assert tertiary == "none"
-
-    def test_detector_only_requires_valid_detector(self, monkeypatch):
-        monkeypatch.delenv("FAIT_AUDIO_STRATEGY", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_DETECTOR", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_TERTIARY", raising=False)
-
-        cfg = SpeakerMatchConfig(
-            reference_dir="/tmp/ref",
-            gallery_dir="/tmp/gal",
-            strategy="detector_only",
-            detector="auto",
-            tertiary="auto"
-        )
-        strategy, detector, tertiary = _resolve_strategy(cfg)
-        assert strategy == "detector_only"
-        assert detector in {"titanet", "wavlm"}
-        assert tertiary == "none"
-
-    def test_two_stage_requires_detector(self, monkeypatch):
-        monkeypatch.delenv("FAIT_AUDIO_STRATEGY", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_DETECTOR", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_TERTIARY", raising=False)
-
-        cfg = SpeakerMatchConfig(
-            reference_dir="/tmp/ref",
-            gallery_dir="/tmp/gal",
-            strategy="two_stage",
-            detector="auto",
-            tertiary="auto"
-        )
-        strategy, detector, tertiary = _resolve_strategy(cfg)
-        assert strategy == "two_stage"
-        assert detector in {"titanet", "wavlm"}
-        assert tertiary == "none"
-
-    def test_three_stage_requires_detector_and_tertiary(self, monkeypatch):
-        monkeypatch.delenv("FAIT_AUDIO_STRATEGY", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_DETECTOR", raising=False)
-        monkeypatch.delenv("FAIT_AUDIO_TERTIARY", raising=False)
-
-        cfg = SpeakerMatchConfig(
-            reference_dir="/tmp/ref",
-            gallery_dir="/tmp/gal",
-            strategy="three_stage",
-            detector="auto",
-            tertiary="auto"
-        )
-        strategy, detector, tertiary = _resolve_strategy(cfg)
-        assert strategy == "three_stage"
-        assert detector in {"titanet", "wavlm"}
-        assert tertiary in {"titanet", "wavlm"}
-        assert detector != tertiary  # They should be different
