@@ -2,8 +2,8 @@
 def _autoimport_plugins():
     import importlib
     for mod in (
-        "fait.vision.embeddings.arcface",
-        "fait.vision.embeddings.clip",
+        "fait.vision.models.arcface",
+        "fait.vision.models.clip",
     ):
         try:
             importlib.import_module(mod)

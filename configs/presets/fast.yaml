@@ -1,0 +1,24 @@
+# configs/presets/fast.yaml
+# Fast configuration - prioritizes speed
+
+audio:
+  speaker_recognition:
+    strategy: titanet_only
+    detector: none
+
+vision:
+  object_detection:
+    strategy: detector_only
+    verifier: yolo
+    yolo:
+      model_id: yolov8n.pt
+      imgsz: 416
+
+  ocr:
+    strategy: first_nonempty
+    engine_order: [trocr]  # Single fast model
+    rotations: [0]  # No rotations
+
+  face_recognition:
+    recognizer: clip
+    thresholds: [0.75]

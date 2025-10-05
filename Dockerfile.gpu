@@ -1,0 +1,35 @@
+# GPU image (CUDA 11.8 runtime). Requires NVIDIA drivers + Docker GPU support.
+FROM pytorch/pytorch:2.3.1-cuda11.8-cudnn8-runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    FAIT_HOME=/workspace/.fait \
+    HF_HOME=/workspace/.fait/cache/hf \
+    TRANSFORMERS_CACHE=/workspace/.fait/cache/hf \
+    TORCH_HOME=/workspace/.fait/cache/torch \
+    FAIT_LOGS_DIR=/workspace/.fait/logs \
+    FAIT_PROGRESS=log
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates \
+    ffmpeg libsndfile1 libgl1 libsm6 libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt && \
+    pip install -r requirements-dev.txt
+
+COPY src ./src
+COPY examples ./examples
+COPY configs ./configs
+COPY .env ./.env
+
+# Helpful defaults for HF on servers (quiet symlink warnings)
+ENV HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+CMD ["/bin/bash"]

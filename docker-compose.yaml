@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  app-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: fait/cpu:latest
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - ./.fait:/workspace/.fait   # persist caches & logs on host
+      - ./datasets:/workspace/datasets
+    environment:
+      # Your app already reads these from .env; Compose also auto-loads .env in repo root.
+#      - HF_HOME=/workspace/.fait/cache/hf
+#      - TRANSFORMERS_CACHE=/workspace/.fait/cache/hf
+#      - TORCH_HOME=/workspace/.fait/cache/torch
+      - FAIT_LOGS_DIR=/workspace/.fait/logs
+      - FAIT_PROGRESS=log
+    tty: true
+
+  app-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: fait/gpu:latest
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - ./.fait:/workspace/.fait
+      - ./datasets:/workspace/datasets
+    environment:
+#      - HF_HOME=/workspace/.fait/cache/hf
+#      - TRANSFORMERS_CACHE=/workspace/.fait/cache/hf
+#      - TORCH_HOME=/workspace/.fait/cache/torch
+      - FAIT_LOGS_DIR=/workspace/.fait/logs
+      - FAIT_PROGRESS=log
+      - CUDA_VISIBLE_DEVICES=0
+    tty: true

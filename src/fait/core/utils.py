@@ -1,29 +1,135 @@
 # src/fait/core/utils.py
 from __future__ import annotations
 from dataclasses import dataclass
-import os, re, io, json, hashlib, pickle
+from datetime import datetime
+import os, re, hashlib, pickle, math, tempfile
 from pathlib import Path
-from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union
+from typing import Iterable, Iterator, List, Tuple, Dict, Optional, Any, Union, Mapping
 import logging, json, time
-
+import subprocess
 import numpy as np
 
+from fait.vision.ocr.models.config import OcrConfig, FusionCfg
 
+log = logging.getLogger("fait.vision.core.utils")
 # ───────────────────────────── Filesystem & IO ─────────────────────────────
 
+
+DEFAULT_AUDIO_EXTS = (
+    ".wav", ".flac", ".mp3", ".m4a", ".aac",
+    ".ogg", ".opus", ".wma", ".aiff", ".aif", ".aifc",
+    ".amr", ".caf", ".mka", ".mp2", ".mpga"
+)
+
+DEFAULT_VIDEO_EXTS = (
+    ".mp4", ".avi", ".mov", ".mkv", ".webm"
+)
+
+DEFAULT_IMAGE_EXTS = (
+    ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"
+)
 def ensure_folder(path: str | Path) -> None:
     Path(path).mkdir(parents=True, exist_ok=True)
 
 def ensure_parent_dir(path: str | Path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-def is_image_file(path: str | Path) -> bool:
+def is_image_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_IMAGE_EXTS) -> bool:
     p = str(path).lower()
-    return os.path.isfile(path) and p.endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"))
+    return Path(path).is_file() and p.endswith(exts)
 
-def is_video_file(path: str | Path) -> bool:
+def is_video_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_VIDEO_EXTS) -> bool:
     p = str(path).lower()
-    return os.path.isfile(path) and p.endswith((".mp4", ".avi", ".mov", ".mkv", ".webm"))
+    return Path(path).is_file() and p.endswith(exts)
+
+def has_audio_extension(path: str | Path, exts: tuple[str, ...] = DEFAULT_AUDIO_EXTS) -> bool:
+    """Check if path has an audio file extension (doesn't check if file exists)"""
+    p = str(path).lower()
+    return p.endswith(exts)
+
+def is_audio_file(path: str | Path, exts: tuple[str, ...] = DEFAULT_AUDIO_EXTS) -> bool:
+    """Check if path is an existing audio file"""
+    return Path(path).is_file() and has_audio_extension(path, exts)
+
+# --- Audio loading helpers (FFmpeg fallback via imageio-ffmpeg) ---
+def load_audio_ffmpeg(
+    path: str | Path,
+    sr: int = 16000,
+    mono: bool = True,
+    offset: float = 0.0,
+    duration: float | None = None,
+) -> tuple[np.ndarray, int]:
+    """
+    Decode with FFmpeg (via imageio-ffmpeg) to float32 mono PCM in [-1, 1].
+    Works for m4a/mp4/mov/aac and most formats.
+    """
+    import imageio_ffmpeg  # ensure installed: pip install imageio-ffmpeg
+
+    exe = imageio_ffmpeg.get_ffmpeg_exe()
+    path = str(path)
+
+    cmd = [exe, "-v", "error"]
+    if offset and offset > 0:
+        cmd += ["-ss", f"{offset}"]
+    cmd += ["-i", path]
+    if duration and duration > 0:
+        cmd += ["-t", f"{duration}"]
+
+    # output raw 16-bit PCM to stdout, resampled
+    ac = "1" if mono else "2"
+    cmd += ["-f", "s16le", "-acodec", "pcm_s16le", "-ac", ac, "-ar", str(sr), "-"]
+
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    if not proc.stdout:
+        raise RuntimeError(f"FFmpeg returned no audio data for {path}")
+
+    pcm = np.frombuffer(proc.stdout, np.int16).astype(np.float32) / 32768.0
+    if not mono:
+        pcm = pcm.reshape(-1, 2).mean(axis=1)  # downmix anyway for embedder
+    return pcm, sr
+
+def load_audio_any(
+    path: str | Path,
+    sr: int = 16000,
+    mono: bool = True,
+    offset: float = 0.0,
+    duration: float | None = None,
+    prefer: str | None = None,  # "ffmpeg" to force FFmpeg
+) -> tuple[np.ndarray, int]:
+    """
+    Try soundfile/librosa first; if the format isn't supported (e.g., m4a),
+    fall back to FFmpeg. Set prefer="ffmpeg" or env FAIT_AUDIO_LOADER=ffmpeg to force.
+    """
+    prefer = (prefer or os.getenv("FAIT_AUDIO_LOADER", "")).strip().lower()
+    path = Path(path)
+
+    if prefer == "ffmpeg":
+        return load_audio_ffmpeg(path, sr=sr, mono=mono, offset=offset, duration=duration)
+
+    # Try soundfile/librosa
+    try:
+        import soundfile as sf
+        data, file_sr = sf.read(str(path), always_2d=False)
+        if data.ndim == 2:
+            data = data.mean(axis=1)
+        # resample if needed
+        if file_sr != sr:
+            import librosa
+            data = librosa.resample(y=data, orig_sr=file_sr, target_sr=sr)
+        return data.astype(np.float32), sr
+    except Exception:
+        pass
+
+    # Try librosa directly (may use audioread)
+    try:
+        import librosa
+        data, file_sr = librosa.load(str(path), sr=sr, mono=True, offset=offset, duration=duration)
+        return data.astype(np.float32), sr
+    except Exception:
+        # fallback to FFmpeg for unsupported formats (e.g., m4a)
+        return load_audio_ffmpeg(path, sr=sr, mono=mono, offset=offset, duration=duration)
+
+
 
 def walk_files(root: str | Path,
                allowed_exts: Optional[Iterable[str]] = None,
@@ -135,6 +241,160 @@ def load_embedding(path: str | Path) -> np.ndarray:
     with open(path, "rb") as f:
         return pickle.load(f)
 
+def save_numpy(
+    path: str | Path,
+    data,
+    *,
+    dtype: np.dtype | str | None = np.float32,
+    compressed: bool | None = None,
+) -> str:
+    """
+    Save a NumPy array to `path`, creating parent folders as needed.
+
+    Behavior:
+      • If path ends with '.npy'  -> np.save
+      • If path ends with '.npz'  -> np.savez_compressed (key 'arr')
+      • Else (no/other ext)       -> pickle to '.pkl' (unless ext given)
+
+    Args:
+      path: Target output path.
+      data: Array-like data to save.
+      dtype: Optional dtype cast before saving (default float32). Use None to skip.
+      compressed: If True and ext is not '.pkl', prefer compressed '.npz'.
+                  If ext is explicitly '.npy' or '.npz', the extension wins.
+
+    Returns:
+      Final file path (str).
+    """
+    p = Path(path)
+    # Ensure parent directory exists
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    arr = np.asarray(data)
+    if dtype is not None and arr.dtype != dtype:
+        arr = arr.astype(dtype, copy=False)
+
+    ext = p.suffix.lower()
+    final_path = p
+
+    # Decide actual format/extension
+    if ext in (".npy", ".npz"):
+        pass  # honor the given extension
+    elif compressed is True:
+        # Force compressed npz if requested explicitly
+        final_path = p.with_suffix(".npz")
+        ext = ".npz"
+    elif ext == "":
+        # Default fallback: pickle when no extension is provided
+        final_path = p.with_suffix(".pkl")
+        ext = ".pkl"
+
+    # Write atomically via a temp file (important on Windows)
+    with tempfile.NamedTemporaryFile(delete=False, dir=str(final_path.parent), suffix=".tmp") as tmp:
+        tmp_path = Path(tmp.name)
+
+    try:
+        if ext == ".npy":
+            np.save(tmp_path, arr)
+        elif ext == ".npz":
+            np.savez_compressed(tmp_path, arr=arr)
+        else:
+            # Pickle fallback (.pkl or unknown ext)
+            with open(tmp_path, "wb") as f:
+                pickle.dump(arr, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # Atomic replace into place
+        os.replace(tmp_path, final_path)
+    finally:
+        # If something failed before replace, clean the temp file
+        if tmp_path.exists() and not final_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+    return str(final_path)
+
+def load_numpy_safe(path: str | Path, dtype: Optional[np.dtype] = None, mmap_mode: Optional[str] = None) -> Optional[np.ndarray]:
+    """
+    Safely load a cached numpy array.
+
+    - Supports .npy (preferred), .npz (uses the first array), and .pkl/.pickle (best-effort).
+    - Returns None if the file doesn't exist or on any error.
+    - If `dtype` is provided, casts the array without copying when possible.
+    - `mmap_mode` is passed to numpy for .npy/.npz (e.g., 'r').
+
+    Parameters
+    ----------
+    path : str | Path
+        Path to the cached array. If no suffix, ".npy" is assumed.
+    dtype : np.dtype, optional
+        Cast the loaded array to this dtype.
+    mmap_mode : str, optional
+        Memory-map mode for numpy load (e.g., 'r').
+
+    Returns
+    -------
+    np.ndarray | None
+        The loaded array or None on failure.
+    """
+    try:
+        p = Path(path)
+        if p.is_dir():
+            return None
+
+        # If no extension, prefer .npy
+        if not p.suffix:
+            p_npy = p.with_suffix(".npy")
+            if p_npy.exists():
+                p = p_npy
+            elif not p.exists():
+                return None  # nothing to load
+
+        if not p.exists():
+            return None
+
+        ext = p.suffix.lower()
+
+        if ext == ".npy":
+            arr = np.load(str(p), allow_pickle=False, mmap_mode=mmap_mode)
+            if not isinstance(arr, np.ndarray):
+                return None
+        elif ext == ".npz":
+            with np.load(str(p), allow_pickle=False, mmap_mode=mmap_mode) as data:
+                keys = list(data.keys())
+                if not keys:
+                    return None
+                arr = data[keys[0]]
+                if not isinstance(arr, np.ndarray):
+                    return None
+        elif ext in {".pkl", ".pickle"}:
+            # Last-resort compatibility with old caches
+            with open(p, "rb") as f:
+                obj: Any = pickle.load(f)
+            try:
+                arr = np.asarray(obj)
+            except Exception:
+                return None
+            if not isinstance(arr, np.ndarray):
+                return None
+        else:
+            # Unknown extension: try numpy and swallow errors
+            try:
+                arr = np.load(str(p), allow_pickle=False, mmap_mode=mmap_mode)
+                if not isinstance(arr, np.ndarray):
+                    return None
+            except Exception:
+                return None
+
+        if dtype is not None:
+            arr = arr.astype(dtype, copy=False)
+
+        return arr
+
+    except Exception:
+        # Never raise from a cache read
+        return None
 
 # ───────────────────────────── Math / Metrics ─────────────────────────────
 
@@ -168,6 +428,134 @@ def sort_pairs(pairs: List[Tuple[str, float]], higher_is_better: bool) -> List[T
 
 def topk_pairs(pairs: List[Tuple[str, float]], k: int, higher_is_better: bool) -> List[Tuple[str, float]]:
     return sort_pairs(pairs, higher_is_better)[:k]
+
+# ───────────────────────────── Strategy / Verifier/ Engine Order ─────────────────────────────
+def resolve_strategy_verifier(fu: FusionCfg) -> tuple[str, str]:
+    """
+    Resolve OCR strategy and verifier with proper precedence:
+
+    1. Explicit non-"auto" values (highest priority)
+    2. Environment variables (for testing/CI)
+    3. Application config from config.yaml
+    4. Hard-coded defaults
+    """
+    import os
+    from fait.core.app_config import get_app_config
+
+    # 1) Read from fusion config
+    strategy = (fu.strategy or "auto").lower()
+    verifier = (fu.verifier or "auto").lower()
+
+    # 2) If both auto, check environment then application config
+    if strategy == "auto" and verifier == "auto":
+        env_s = os.getenv("FAIT_OCR_STRATEGY", "").strip().lower()
+        env_v = os.getenv("FAIT_OCR_VERIFIER", "").strip().lower()
+
+        if env_s or env_v:
+            # Environment override
+            strategy = env_s or "auto"
+            verifier = env_v or "auto"
+        else:
+            # Load from application config
+            app_config = get_app_config()
+            strategy = app_config.vision.ocr.strategy
+            verifier = app_config.vision.ocr.verifier
+
+    # 3) Apply defaults for any remaining "auto"
+    if strategy == "auto":
+        strategy = "first_nonempty"
+    if verifier == "auto":
+        verifier = "none"
+
+    # 4) Validation: these strategies never use a verifier
+    if strategy in {"first_nonempty", "best_of", "consensus"}:
+        verifier = "none"
+
+    # 5) Validation for strategies that need verifiers
+    if strategy == "two_stage" and verifier not in {"tesseract", "trocr", "doctr", "donut"}:
+        verifier = "tesseract"
+    if strategy == "detector_only" and verifier not in {"paddle", "tesseract", "trocr", "doctr", "donut"}:
+        verifier = "paddle"
+
+    return strategy, verifier
+
+def resolve_engine_order(cfg, strategy: str) -> list[str]:
+    """
+    Resolve engine order with proper precedence:
+
+    1. Environment variable (for testing/CI) - only for first_nonempty/best_of/consensus
+    2. Pipeline YAML (cfg.engine_order) - per-run override
+    3. Application config (config.yaml) - application default
+    4. Hard-coded fallback
+    """
+    import os
+    from fait.core.app_config import get_app_config
+
+    # 1) Check if pipeline YAML provided an explicit order
+    yaml_order = sanitize_engine_order(cfg)
+
+    # 2) Only allow env override for these strategies
+    overridable = {"first_nonempty", "best_of", "consensus"}
+    if strategy not in overridable:
+        # For two_stage/detector_only, use YAML or app config
+        if yaml_order:
+            return yaml_order
+        # Fall back to app config
+        app_config = get_app_config()
+        return [e for e in app_config.vision.ocr.engine_order  # ← Changed from .engines
+                if e in (cfg.engines or {})]
+
+    # 3) Check environment variable (testing override)
+    raw = (os.getenv("FAIT_OCR_ENGINES") or os.getenv("OCR_ENGINES") or "").strip()
+    if raw:
+        alias = {
+            "paddleocr": "paddle",
+            "paddle": "paddle",
+            "tesseract": "tesseract",
+            "trocr": "trocr",
+            "doctr": "doctr",
+            "donut": "donut",
+            "donot": "donut",
+        }
+        enabled = {n for n, e in (cfg.engines or {}).items()
+                   if (isinstance(e, dict) and e.get("enabled", True))
+                   or (not isinstance(e, dict) and getattr(e, "enabled", True))}
+        desired = []
+        for token in raw.split(","):
+            key = alias.get(token.strip().lower())
+            if key and key in enabled and key in (cfg.engines or {}):
+                desired.append(key)
+
+        if desired:
+            log.info("ocr:engine_order_override", extra={"strategy": strategy, "order": desired, "source": "env"})
+            return desired
+
+    # 4) Use YAML if provided
+    if yaml_order:
+        log.info("ocr:engine_order", extra={"strategy": strategy, "order": yaml_order, "source": "yaml"})
+        return yaml_order
+
+    # 5) Fall back to application config
+    app_config = get_app_config()
+    app_order = [e for e in app_config.vision.ocr.engine_order  # ← Changed from .engines
+                 if e in (cfg.engines or {})]
+    log.info("ocr:engine_order", extra={"strategy": strategy, "order": app_order, "source": "app_config"})
+    return app_order
+
+def sanitize_engine_order(cfg: OcrConfig) -> List[str]:
+    """
+    Keep only enabled models, preserve the user-specified order.
+    cfg.models is normalized to dicts later so we can .get('enabled', True).
+    """
+    enabled = {
+        name for name, e in (cfg.engines or {}).items()
+        if (isinstance(e, dict) and e.get("enabled", True)) or (not isinstance(e, dict) and getattr(e, "enabled", True))
+    }
+    return [name for name in (cfg.engine_order or []) if name in enabled]
+
+
+# ───────────────────────────── Result Normalization ─────────────────────────────
+
 
 
 # ───────────────────────────── Plotting (headless-safe) ─────────────────────────────
@@ -348,6 +736,55 @@ def write_object_report(
 
     return str(path.resolve())
 
+def write_report_ocr(
+    outputs_root: Union[str, Path],
+    *,
+    strategy: str,
+    engines: Optional[Iterable[str]] = None,
+    verifier: Optional[str] = None,
+    timestamp: Optional[str] = None,
+    counts: Optional[Dict[str, int]] = None,
+    extra: Optional[Dict[str, str]] = None,
+    filename: str = "report.txt",
+    ensure_dir: bool = True,
+) -> Tuple[Path, Path]:
+    """Create OCR run dir with the naming you want and write a small text report."""
+    strategy = (strategy or "").lower().strip()
+    engines_list: List[str] = [e.strip() for e in (engines or []) if str(e).strip()]
+    ver = (verifier or "none").lower().strip()
+    stamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if strategy in {"first_nonempty", "best_of", "consensus"}:
+        tag = f"{strategy}_{'-'.join(engines_list) if engines_list else 'none'}"
+    elif strategy == "two_stage":
+        tag = f"two_stage_paddle_{ver}"
+    elif strategy == "detector_only":
+        tag = f"detector_only_{ver}"
+    else:
+        tag = strategy or "ocr"
+
+    run_name = f"{tag}_{stamp}"
+    run_dir = Path(outputs_root) / "vision" /"ocr" / run_name
+    if ensure_dir:
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+    report_path = run_dir / filename
+    with report_path.open("w", encoding="utf-8") as f:
+        f.write("=== OCR SUMMARY ===\n")
+        f.write(f"Strategy     : {strategy}\n")
+        if engines_list:
+            f.write(f"Engines      : {', '.join(engines_list)}\n")
+        if ver and ver != "none":
+            f.write(f"Verifier     : {ver}\n")
+        if counts:
+            for k, v in counts.items():
+                f.write(f"{k.capitalize():12}: {v}\n")
+        if extra:
+            for k, v in extra.items():
+                f.write(f"{k:12}: {v}\n")
+
+    return run_dir, report_path
+
 # ───────────────────────────── Progress Status ─────────────────────────────
 
 @dataclass
@@ -433,20 +870,147 @@ class ProgressMeter:
             append_jsonl(self.log_path, {"event": "progress", **payload})
 
 
+# ───────────────────────────── Fusion ─────────────────────────────
+
+def _fcfg_get(cfg: Any, key: str, default: Any = None):
+    """Read attribute or mapping key from a config-ish object."""
+    if hasattr(cfg, key):
+        return getattr(cfg, key)
+    if isinstance(cfg, Mapping):
+        return cfg.get(key, default)
+    return default
+
+def _zscore(x: float, mean: Optional[float], std: Optional[float]) -> float:
+    if mean is None or std is None or std <= 0:
+        return x
+    return (x - mean) / std
+
+def _sigmoid(x: float) -> float:
+    # numerically stable sigmoid
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    else:
+        z = math.exp(x)
+        return z / (1.0 + z)
+
+def fuse_scores(
+    gscore: float,
+    cscore: float,
+    label: str,
+    fcfg: Any,
+) -> tuple[float, float, bool]:
+    """
+    Generic score-level fusion.
+    Returns: (fused_score, threshold_used, is_accept)
+
+    Supports fcfg fields (attr or mapping):
+      method: "and" | "weighted" | "sum" | "product" | "max" | "logistic"
+      alpha, tau_star
+      class_thresholds: dict
+      gdino_only_default_tau
+      gdino_mean, gdino_std, det_mean, det_std
+      w_g, w_c, b   (for "logistic")
+    """
+    method = (_fcfg_get(fcfg, "method", "and") or "and").lower()
+    alpha = float(_fcfg_get(fcfg, "alpha", 0.5))
+    tau_star = float(_fcfg_get(fcfg, "tau_star", 0.6))
+    class_thresholds = _fcfg_get(fcfg, "class_thresholds", {}) or {}
+    default_tau = float(_fcfg_get(fcfg, "gdino_only_default_tau", 0.5))
+
+    gdino_mean = _fcfg_get(fcfg, "gdino_mean", None)
+    gdino_std  = _fcfg_get(fcfg, "gdino_std",  None)
+    det_mean   = _fcfg_get(fcfg, "det_mean",   None)
+    det_std    = _fcfg_get(fcfg, "det_std",    None)
+
+    w_g = float(_fcfg_get(fcfg, "w_g", 1.0))
+    w_c = float(_fcfg_get(fcfg, "w_c", 1.0))
+    b   = float(_fcfg_get(fcfg, "b",   0.0))
+
+    class_tau = float(class_thresholds.get(label.lower(), default_tau))
+    tau = class_tau if method == "and" else tau_star
+
+    # optional z-norm for methods that combine the two scores
+    g = _zscore(gscore, gdino_mean, gdino_std)
+    c = _zscore(cscore, det_mean,   det_std)
+
+    if method == "and":
+        fused = min(gscore, cscore)        # report the bottleneck score
+        ok = (gscore >= class_tau) and (cscore >= class_tau)
+
+    elif method == "weighted":
+        fused = alpha * gscore + (1.0 - alpha) * cscore
+        ok = fused >= tau
+
+    elif method == "sum":
+        fused = g + c
+        ok = fused >= tau
+
+    elif method == "product":
+        fused = max(0.0, min(1.0, gscore * cscore))
+        ok = fused >= tau
+
+    elif method == "max":
+        fused = max(gscore, cscore)
+        ok = fused >= tau
+
+    elif method == "logistic":
+        fused = _sigmoid(w_g * g + w_c * c + b)
+        ok = fused >= tau
+
+    else:
+        # fallback to weighted
+        fused = alpha * gscore + (1.0 - alpha) * cscore
+        ok = fused >= tau
+
+    return float(fused), float(tau), bool(ok)
+
+
+def human_size(n_bytes: float | int, si: bool = False) -> str:
+    """
+    Convert a byte count into a human-friendly string.
+
+    si=False (default) -> binary units (KiB, MiB, ... 1024x)
+    si=True            -> decimal units (kB, MB, ... 1000x)
+
+    Examples:
+        human_size(1536)          -> "1.5 MiB"
+        human_size(1536, si=True) -> "1.5 MB"
+    """
+    try:
+        n = float(n_bytes)
+    except Exception:
+        return str(n_bytes)
+
+    base = 1000.0 if si else 1024.0
+    units = ["B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"] if si else \
+            ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"]
+
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+
+    for u in units:
+        if n < base or u == units[-1]:
+            return f"{sign}{n:0.1f} {u}"
+        n /= base
 
 # ───────────────────────────── Exports ─────────────────────────────
 
 __all__ = [
     # IO & FS
     "ensure_folder", "is_image_file", "is_video_file", "walk_files",
-    "to_safe_filename", "write_jsonl",
+    "to_safe_filename", "write_jsonl", is_audio_file, "append_jsonl", "has_audio_extension",
     # Hashing / cache
-    "sha256_file", "cache_path", "save_embedding", "load_embedding", "file_md5",
+    "sha256_file", "cache_path", "save_embedding", "load_embedding", "save_numpy", "file_md5",
     # Math / metrics
     "l2_normalize", "cosine_similarity", "compute_distance",
     "sort_pairs", "topk_pairs",
     # Plotting & reporting
-    "plot_scores", "plot_distances", "plot_similarities", "write_report", "write_object_report",
+    "plot_scores", "plot_distances", "plot_similarities", "write_report", "write_object_report", "write_report_ocr",
     # Progress status
     "ProgressMeter",
+    # Fusion
+    "fuse_scores",
 ]
+
+

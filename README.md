@@ -1,75 +1,125 @@
-# Forensics AI Toolkit (FAIT)
+# Forensic AI Toolkit (FAIT)
 
-**AI-Enhanced Digital Forensics Analysis Application**  
-_Revolutionizing Criminal Investigations with Artificial Intelligence_
+**Experimental AI-Enhanced Digital Forensics Analysis**
+
+![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
+[![Tests](https://img.shields.io/badge/tests-passing-green.svg)](tests/)
+[![Coverage](https://img.shields.io/badge/coverage-48%25-yellow.svg)]()
 
 ![DCO](https://img.shields.io/badge/DCO-1.1-green.svg) [![Contributing](https://img.shields.io/badge/Contributions-Welcome-blue.svg)](CONTRIBUTING.md)
-
 ---
 
 ## 📌 Overview
-Forensics AI Toolkit (FAIT) transforms the speed, accuracy, and scalability of digital forensic investigations by combining **AI-powered analysis** with **human-validated insights**.  **FAIT should be used in investigations to generate leads rather than as courtroom evidence.**
 
-### Key Features
-- **AI-powered pattern recognition**
-- **Multi-modal evidence processing** (images, audio, documents)
-- **Human-in-the-loop verification** for legal compliance
-- **Secure, privacy-focused architecture**
+FAIT is an **experimental research toolkit** exploring AI-powered pattern recognition for digital forensic investigations. It's designed for **generating investigative leads**, not courtroom evidence.
 
----
+**Key capabilities:**
+- Multi-modal analysis (images, audio, documents)
+- Configurable processing pipelines
+- Human-in-the-loop verification workflow
+- Transparent, auditable processing chains
 
-## ⚠ Challenges in Traditional Forensics
-- **Time Constraints** – Manual evidence review causes delays.
-- **Human Error** – Fatigue and bias impact accuracy.
-- **Scalability Issues** – Exploding volumes of digital evidence.
-- **Skill Gaps** – Shortage of advanced forensic expertise.
+**Important:** This is a research/experimental tool for exploratory analysis. Results require manual verification by trained forensic analysts before use in investigations.
 
 ---
 
-## 🚀 FAIT’s AI-Based Solution
-### Core Capabilities
-- **Computer Vision** – Facial recognition, object detection.
-- **NLP & RAG** – Legal document parsing, receipt interpretation, multi-language OCR.
-- **Audio Analysis** – Voice matching, background noise location inference.
-- **Secure Processing** – Role-based access, encryption, GDPR/CCPA/FBI compliance.
+## 🏛 Use Cases
+
+- **Object Detection**: Screen large image collections for specific items (weapons, contraband)
+- **Face Recognition**: Compare gallery images against reference photos
+- **Speaker Recognition**: Match audio samples using voice embeddings
+- **OCR**: Extract text from documents with multiple engine strategies
+- **Audio Analysis**: Voice matching, preliminary audio classification
 
 ---
 
-## 🛠 Technical Architecture
-- **Python Data Extraction** – `pytsk3`, `pyewf`, `python-magic`, `hashlib`
-- **Visual Analysis** – FaceNet, ArcFace, CLIP, OWL-ViT, DETR, GroundingDINO
-- **Audio Models** – Wav2Vec2, ECAPA-TDNN, X-Vector
-- **Integration** – Evidence & case management systems, secure reporting
+## ⚙️ Technical Stack
+
+### Vision
+- **Face Recognition**: InsightFace (ArcFace), OpenAI CLIP
+- **Object Detection**: GroundingDINO, Deformable DETR, YOLO
+- **OCR**: TrOCR, Donut, PaddleOCR, Tesseract, DocTR (multi-engine fusion)
+
+### Audio
+- **Speaker Recognition**: SpeechBrain (ECAPA-TDNN), Microsoft WavLM, NVIDIA TitaNet
+
+### Infrastructure
+- **Configuration**: YAML-based with environment variable overrides
+- **Caching**: Model and embedding caching to `.fait/` directory
+- **Logging**: Structured JSON logging for audit trails
+- **Progress**: Real-time progress meters for long-running operations
+- **Deployment**: Docker containers (CPU/GPU), air-gap compatible
 
 ---
 
-## 📊 Performance
-- **Faster Analysis** – Reduced evidence processing time
-- **Accuracy** – Correct evidence identification rate
-- **Throughput** – Higher case handling capacity
+## 🚀 Quick Start
+
+### Installation
+```bash
+# Clone repository
+git clone <repo-url>
+cd forensic_ai_toolkit
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+````
+### 📦 Dataset
+The datasets used in this project are available externally due to size.  
+Please check [DATASETS.md](DATASETS.md) for download links and setup instructions.
+
+### 📂 Project Structure
+See [Project Structure](PROJECT_STRUCTURE.md) for details.
 
 ---
 
-## 🏛 Societal Impact
-- **Justice Acceleration** – Reduced case backlogs
-- **Stronger Cases** – More complete evidence packages
-- **Victim Support** – Faster closure for affected parties
+## ⚠️ Limitations & Considerations
+
+### Technical
+- **Not production-ready**: Experimental codebase, expect rough edges and breaking changes
+- **Model dependencies**: Large downloads (10-50GB total for all models)
+- **GPU strongly recommended**: CPU processing is 10-50x slower
+- **Accuracy varies**: AI models have inherent error rates (typically 85-95% accuracy depending on task)
+- **Memory intensive**: Some models require 8-16GB GPU VRAM
+- **No real-time** guarantee: Processing times depend on hardware and batch size
+
+### Forensic/Legal Limitation
+- **Not admissible evidence**: Use for lead generation and case prioritization only
+- **Human verification required**: All AI results must be reviewed by qualified analysts
+- **Chain of custody**: FAIT logs processing steps but does NOT manage evidence custody
+- **Not certified**: No forensic certification or validation by standards bodies
+- **Jurisdiction-specific**: Legal admissibility varies by region and court
+- **Discovery obligations**: AI-generated leads may require disclosure in legal proceedings
+
+### Ethical Considerations
+- **Dual-use technology**: Can be misused for surveillance or harassment
+- **Privacy implications**: Handle biometric data according to regulations (GDPR, CCPA, BIPA)
+- **Transparency**: Document all processing steps, model versions, and thresholds used
+- **Proportionality**: Use appropriate thresholds to balance false positives vs. false negatives
+- **Accountability**: Maintain human oversight and decision-making authority
+- **Consent**: Ensure proper authorization for biometric analysis
 
 ---
 
 ## 🔐 Security & Privacy
-- Air-gapped compatibility  
-- End-to-end encryption  
-- Role-based access control  
-- Chain-of-custody maintenance  
 
----
+### Deployment Security
+- **Air-gap compatible**: No external API calls required (all processing local)
+- **Local processing**: All analysis runs on-premises
+- **Role-based access**: Implement at OS/deployment level (not built into FAIT)
+- **Audit logs**: Structured JSON logs in .fait/logs/ (rotate regularly)
+- **Network isolation**: Can run completely offline
 
-## 📦 Deployment Workflow
-1. **Evidence Ingestion** – Secure import + hash verification
-2. **Automated AI Processing** – Logging & chain-of-custody retention
-3. **Multi-Level QA** – Analyst & expert validation
-4. **Maintenance** – Regular model updates
+### Data Handling
+
+- **No telemetry**: FAIT does not send data externally
+- **Cache management**: Models and embeddings cached in .fait/cache/
+- **Sensitive data**: Never commit to version control
+- **Secure deletion**: Use secure wipe tools for sensitive outputs
+- **Access controls**: Implement file system permissions appropriately
 
 ---
 
@@ -82,12 +132,56 @@ All commits must be signed off:
 git commit -s -m "Your commit message"
 ```
 
-## 📦 Dataset
+---
 
-The datasets used in this project are available externally due to size.  
-Please check [DATASETS.md](DATASETS.md) for download links and setup instructions.
+## 📖 Citation
+```bibtex
+@software{fait2025,
+  title={Forensic AI Toolkit: Experimental AI-Enhanced Digital Forensics},
+  author={[Etinosa Osawe]},
+  year={2025},
+  url={[https://github.com/etinoxa/forensic-ai-toolkit]},
+  note={Research software for investigative lead Generation}
+}
+```
+---
 
-## 📂 Project Structure
-See [Project Structure](PROJECT_STRUCTURE.md) for details.
+## 🙌 Acknowledgments
+FAIT builds on these excellent open-source projects:
 
+- [Transformers](https://huggingface.co/transformers) - Model architectures and training
+- [InsightFace](https://github.com/deepinsight/insightface) - Face recognition models
+- [Ultralytics](https://github.com/deepinsight/insightface) YOLO - Object detection
+- [SpeechBrain](https://github.com/deepinsight/insightface) - Speech and audio processing
+- [PaddleOCR](https://github.com/deepinsight/insightface) - OCR detection and recognition
+- [GroundingDINO](https://github.com/deepinsight/insightface) - Open-vocabulary detection
 
+---
+
+## 🗺️ Roadmap
+
+**Vision & Audio (Active Development)**
+- [ ] Video analysis pipelines (frame extraction, temporal analysis)
+- [ ] Multi-language OCR improvements (non-Latin scripts)
+- [ ] Performance benchmarking suite
+- [ ] Additional model backends (Whisper for audio, SAM for segmentation)
+
+**NLP & Text Analysis (Planned)**
+- [ ] Document analysis pipelines (contracts, reports, correspondence)
+- [ ] Network log parsing and anomaly detection
+- [ ] Chat/messaging analysis (metadata extraction, participant mapping)
+- [ ] Browser history timeline reconstruction
+- [ ] Named entity recognition (persons, organizations, locations)
+
+**Integration & Workflow (Future)**
+- [ ] Automated report generation with findings summary
+- [ ] Integration with case management systems (Autopsy, CaseGuard)
+- [ ] Export formats for common forensic tools
+- [ ] RESTful API for remote processing
+- [ ] Web UI for non-technical users
+
+**Infrastructure (Ongoing)**
+- [ ] Enhanced configuration management
+- [ ] Improved caching strategies
+
+**Status**: Active research and development. Expect breaking changes.

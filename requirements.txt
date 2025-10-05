@@ -10,11 +10,13 @@ onnxruntime
 ultralytics
 
 #OCR
-ipywidgets
+
 paddlepaddle
 paddleocr
-easyocr
+rapidfuzz
+#easyocr
 pytesseract
+python-doctr
 
 #NLP
 transformers
@@ -30,6 +32,14 @@ einops
 pydantic
 python-dotenv
 
+#AUDIO
+speechbrain
+librosa
+soundfile
+imageio_ffmpeg
+webrtcvad
+imageio
+
 
 # Other dependencies
 numpy
@@ -41,6 +51,10 @@ pandas
 ipywidgets
 ultralytics
 tensorflow
+typing-extensions
+einops
+rich
+
 
 
 #audio
@@ -52,3 +66,6 @@ imageio-ffmpeg
 
 #Database
 chromadb
+
+nemo_toolkit[asr]
+protobuf==5.28.3

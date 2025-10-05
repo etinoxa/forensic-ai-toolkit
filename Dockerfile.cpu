@@ -1,0 +1,52 @@
+# CPU-only image
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    # Centralize caches & logs inside .fait (persist via volume)
+    FAIT_HOME=/workspace/.fait \
+    HF_HOME=/workspace/.fait/cache/hf \
+    TRANSFORMERS_CACHE=/workspace/.fait/cache/hf \
+    TORCH_HOME=/workspace/.fait/cache/torch \
+    FAIT_LOGS_DIR=/workspace/.fait/logs \
+    FAIT_PROGRESS=log
+
+# System deps (opencv, audio, ffmpeg, etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates \
+    ffmpeg libsndfile1 libgl1 libsm6 libxext6 \
+    build-essential python3-dev cmake pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Copy only requirement files first (better layer caching)
+COPY requirements.txt requirements-dev.txt ./
+
+# Keep pip conservative + torch CPU first (smaller failure surface)
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN python -m pip install --upgrade "pip<25" "setuptools<70" wheel && \
+    pip install --index-url https://download.pytorch.org/whl/cpu \
+        torch torchvision torchaudio
+
+# Preinstall webrtcvad as a wheel (no source build)
+RUN pip install --only-binary=:all: webrtcvad==2.0.10 || true
+
+# Build a trimmed requirements file that drops packages we know
+# are problematic in slim CPU images (insightface here).
+# If insightface is not in your requirements, this is a no-op.
+RUN sed '/^insightface[>=<]/d' requirements.txt > /tmp/req_cpu.txt && \
+    sed -i '/^webrtcvad[>=<]/d' /tmp/req_cpu.txt && \
+    pip install -r /tmp/req_cpu.txt && \
+    pip install -r requirements-dev.txt
+
+# Now copy source
+COPY src ./src
+COPY examples ./examples
+COPY configs ./configs
+COPY .env ./.env
+
+# Default shell
+CMD ["/bin/bash"]
