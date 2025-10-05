@@ -1,13 +1,24 @@
-# examples/object_detection_quickstart.py
-from __future__ import annotations
+# examples/vision/object_detection_quickstart.py
+"""
+Object Detection Quickstart - Uses config.yaml for all settings.
+Run-specific overrides can be passed as CLI arguments.
+"""
 
-import os, sys, pathlib, argparse, logging, uuid, warnings, yaml
+import os
+import sys
+import pathlib
+import argparse
+import logging
+import uuid
+import warnings
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-# .env first (silence TF before heavy imports)
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
+
+# Silence warnings
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 warnings.filterwarnings(
@@ -18,83 +29,106 @@ warnings.filterwarnings(
 )
 
 from fait.core.logging_config import setup_logging
-from fait.core.config_io import load_yaml, merge_into_dataclass
-from fait.vision.pipelines.object_detection_pipeline import ScreenConfig, run_object_detection
-
-
-def resolve_gallery(p: str | None) -> str:
-    if not p:
-        return str((ROOT / "datasets" / "images" / "objects" / "raw").resolve())
-    pp = pathlib.Path(p)
-    return str((ROOT / p).resolve() if not pp.is_absolute() else pp.resolve())
-
-def apply_fusion_preset(cfg, yaml_path: str, preset: str):
-    data = yaml.safe_load(open(yaml_path, "r"))
-    params = data.get(preset) or {}
-    # shallow update is enough (all fields are scalars or dicts)
-    for k, v in params.items():
-        setattr(cfg.fusion, k, v)
-
-# ...
-cfg = ScreenConfig(
-    prompts=["person with weapon"],
-    gallery_dir="datasets/images/objects/raw",
-    # ... your other config ...
+from fait.core.app_config import get_app_config
+from fait.vision.pipelines.object_detection_pipeline import (
+    ScreenConfig,
+    FusionConfig,
+    DetectorOnlyConfig,
+    run_object_detection
 )
-
-apply_fusion_preset(cfg, "configs/fusion.yaml", preset="weighted_60_40")
+from fait.vision.object_detection.models.grounding_dino import GDINOConfig
+from fait.vision.object_detection.models.yolo import YoloConfig
+from fait.vision.object_detection.models.deformable_detr import DefDETRConfig
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Object screening (YAML-driven)")
-    ap.add_argument("--config", default="configs/vision/object_screen.yaml")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description="Object Detection Quickstart")
+    parser.add_argument("--gallery", help="Gallery directory (overrides default)")
+    parser.add_argument("--output", help="Output directory (overrides default)")
+    parser.add_argument("--prompts", nargs="+", help="Detection prompts (e.g., 'knife' 'gun')")
+    parser.add_argument("--strategy", choices=["gdino_only", "detector_only", "two_stage"],
+                       help="Override strategy")
+    parser.add_argument("--verifier", choices=["yolo", "deformable_detr", "none"],
+                       help="Override verifier")
+    parser.add_argument("--save-crops", action="store_true", help="Save cropped detections")
+    args = parser.parse_args()
 
     setup_logging()
     log = logging.getLogger("fait.vision.pipelines.object_screen")
     run_id = str(uuid.uuid4())
     log.info("object_screen:start", extra={"run_id": run_id})
 
-    # ---- Load YAML preset ----
-    yml = load_yaml(args.config)
+    # Load application config
+    app_config = get_app_config()
+    obj_config = app_config.vision.object_detection
 
-    # ---- Build default cfg then merge YAML ----
+    # Resolve paths
+    gallery_dir = args.gallery or str(ROOT / "datasets" / "images" / "objects" / "raw")
+    output_dir = args.output
+
+    # Config with CLI overrides
+    prompts = args.prompts or ["person with weapon", "gun", "knife"]
+    strategy = args.strategy or obj_config.strategy
+    verifier = args.verifier or obj_config.verifier
+    save_crops = args.save_crops
+
+    # Build model configs from app_config
     cfg = ScreenConfig(
-        prompts=[],
-        gallery_dir=resolve_gallery(yml.get("gallery_dir")),
-        output_dir=yml.get("output_dir"),     # None -> .fait/outputs/object
-        save_crops=bool(yml.get("save_crops", False)),
+        prompts=prompts,
+        gallery_dir=gallery_dir,
+        output_dir=output_dir,
+        save_crops=save_crops,
+        strategy=strategy,
+        verifier=verifier,
+        gdino=GDINOConfig(
+            model_id=obj_config.gdino_model_id,
+            box_threshold=obj_config.gdino_box_threshold,
+            text_threshold=obj_config.gdino_text_threshold,
+            nms_iou=obj_config.gdino_nms_iou,
+            long_side=obj_config.gdino_long_side,
+            box_expand=obj_config.gdino_box_expand,
+        ),
+        yolo=YoloConfig(
+            model_id=obj_config.yolo_model_id,
+            score_threshold=obj_config.yolo_score_threshold,
+            nms_iou=obj_config.yolo_nms_iou,
+            imgsz=obj_config.yolo_imgsz,
+        ),
+        detr=DefDETRConfig(
+            model_id=obj_config.detr_model_id,
+            score_threshold=obj_config.detr_score_threshold,
+            nms_iou=obj_config.detr_nms_iou,
+        ),
+        fusion=FusionConfig(
+            rule=obj_config.fusion_rule,
+            alpha=obj_config.fusion_alpha,
+            tau_star=obj_config.fusion_tau_star,
+            iou_gate=obj_config.fusion_iou_gate,
+            borderline_window=obj_config.fusion_borderline_window,
+            gdino_only_default_tau=obj_config.gdino_only_default_tau,
+        ),
+        detector_only=DetectorOnlyConfig(
+            default_tau=obj_config.detector_only_default_tau,
+        ),
     )
-    merge_into_dataclass(cfg, yml)  # fills strategy, gdino/yolo/detr/fusion, etc.
 
-    # ---- Log resolved config (high level) ----
+    print("=== Object Detection Configuration ===")
+    print(f"Strategy      : {cfg.strategy}")
+    print(f"Verifier      : {cfg.verifier}")
+    print(f"Prompts       : {cfg.prompts}")
+    print(f"Gallery       : {cfg.gallery_dir}")
+    print(f"Output        : {cfg.output_dir or '(auto)'}")
+    print(f"Save crops    : {cfg.save_crops}")
+    print()
+
     log.info("object_screen:config", extra={
-        "strategy": getattr(cfg, "strategy", "two_stage"),
+        "strategy": cfg.strategy,
         "verifier": cfg.verifier,
         "gallery_dir": cfg.gallery_dir,
         "prompts": cfg.prompts,
-        "gdino": {
-            "model_id": cfg.gdino.model_id,
-            "box_threshold": cfg.gdino.box_threshold,
-            "text_threshold": cfg.gdino.text_threshold,
-            "nms_iou": cfg.gdino.nms_iou,
-            "long_side": cfg.gdino.long_side,
-            "box_expand": cfg.gdino.box_expand,
-            "per_prompt": getattr(cfg.gdino, "per_prompt", False),
-        },
-        "fusion": {
-            "rule": cfg.fusion.rule,
-            "alpha": cfg.fusion.alpha,
-            "tau_star": cfg.fusion.tau_star,
-            "iou_gate": cfg.fusion.iou_gate,
-            "gdino_only_default_tau": cfg.fusion.gdino_only_default_tau,
-            "borderline_window": cfg.fusion.borderline_window,
-            "class_thresholds": cfg.fusion.class_thresholds,
-        },
-        "detector_only": getattr(cfg, "detector_only", None).__dict__ if hasattr(cfg, "detector_only") else {},
     })
 
-    # ---- Run ----
+    # Run
     summary = run_object_detection(cfg)
 
     print("\n=== OBJECT SCREEN SUMMARY ===")
@@ -102,7 +136,8 @@ def main() -> None:
     print(f"Found images  : {summary['found']}")
     print(f"Review queue  : {summary['review']}")
     print(f"Run directory : {summary['run_dir']}")
-    print(f"Log (JSONL)   : {summary['log_path']}")
+    print(f"Log (JSONL)   : {summary.get('log_path')}")
+    print(f"Report        : {summary.get('report_path')}")
     print(f"Run ID        : {run_id}")
 
 

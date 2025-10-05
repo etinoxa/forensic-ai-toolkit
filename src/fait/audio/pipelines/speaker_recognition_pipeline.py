@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Literal, Tuple
 import numpy as np
 import logging
 
+from fait.core.app_config import get_app_config
 from fait.core.paths import get_paths
 from fait.core.utils import (
     ensure_folder, is_audio_file, file_md5, ProgressMeter,
@@ -85,48 +86,66 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     if na == 0 or nb == 0: return 0.0
     return float(np.dot(a, b) / (na * nb))
 
+
 def _resolve_strategy(cfg: SpeakerMatchConfig) -> Tuple[str, str, str]:
     """
-    Return (strategy, detector, tertiary) after applying:
-    - Only honor .env when strategy, detector, tertiary are ALL 'auto' in YAML.
-    - For single-stage (speechbrain_only|titanet_only), force detector='none', tertiary='none'.
-    """
-    s = (cfg.strategy  or "auto").strip().lower()
-    d = (cfg.detector  or "auto").strip().lower()
-    t = (cfg.tertiary  or "auto").strip().lower()
+    Return (strategy, detector, tertiary) with proper precedence:
 
-    if s == d == t == "auto":
+    1. Explicit non-"auto" values in cfg
+    2. Environment variables (testing overrides)
+    3. Application config from config.yaml
+    4. Hard-coded defaults
+    """
+    import os
+    from fait.core.app_config import get_app_config
+
+    s = (cfg.strategy or "auto").strip().lower()
+    d = (cfg.detector or "auto").strip().lower()
+    t = (cfg.tertiary or "auto").strip().lower()
+
+    # If ALL are auto, check env vars first, then application config
+    if s == "auto" and d == "auto" and t == "auto":
         env_s = os.getenv("FAIT_AUDIO_STRATEGY", "").strip().lower()
         env_d = os.getenv("FAIT_AUDIO_DETECTOR", "").strip().lower()
         env_t = os.getenv("FAIT_AUDIO_TERTIARY", "").strip().lower()
-        s = env_s or "two_stage"
-        d = env_d or "titanet"
-        t = env_t or ("wavlm" if s == "three_stage" and d == "titanet"
-                      else "titanet" if s == "three_stage" and d == "wavlm"
-                      else "none")
-    else:
-        if s == "auto": s = "two_stage"
-        if s in {"speechbrain_only", "titanet_only"}:
-            d, t = "none", "none"
-        elif s == "detector_only":
-            if d == "auto": d = "titanet"
-            t = "none"
-        elif s == "two_stage":
-            if d == "auto": d = "titanet"
-            t = "none"
-        elif s == "three_stage":
-            if d == "auto": d = "titanet"
-            if t == "auto":
-                t = "wavlm" if d == "titanet" else "titanet"
-        else:
-            s, d, t = "two_stage", "titanet", "none"
 
-    if s in {"speechbrain_only","titanet_only"}:
-        d, t = "none", "none"
-    if s in {"detector_only", "two_stage"} and d not in {"titanet", "wavlm"}:
+        if env_s or env_d or env_t:
+            # Environment override
+            s = env_s or "auto"
+            d = env_d or "auto"
+            t = env_t or "auto"
+        else:
+            # Load from application config
+            app_config = get_app_config()
+            s = app_config.audio.speaker_recognition.strategy
+            d = app_config.audio.speaker_recognition.detector
+            t = app_config.audio.speaker_recognition.tertiary
+
+    # Apply defaults for any remaining "auto" values
+    if s == "auto":
+        s = "two_stage"
+    if d == "auto":
         d = "titanet"
-    if s == "three_stage" and t not in {"titanet", "wavlm"}:
-        t = "wavlm" if d == "titanet" else "titanet"
+    if t == "auto":
+        t = "none"
+
+    # Validation and normalization
+    if s in {"speechbrain_only", "titanet_only"}:
+        d, t = "none", "none"
+    elif s == "detector_only":
+        if d not in {"titanet", "wavlm"}:
+            d = "titanet"
+        t = "none"
+    elif s == "two_stage":
+        if d not in {"titanet", "wavlm"}:
+            d = "titanet"
+        t = "none"
+    elif s == "three_stage":
+        if d not in {"titanet", "wavlm"}:
+            d = "titanet"
+        if t not in {"titanet", "wavlm"} or t == d:
+            t = "wavlm" if d == "titanet" else "titanet"
+
     return s, d, t
 
 def _fuse_two(a: float, b: float, cfg: TwoStageCfg) -> Tuple[float,float,bool]:

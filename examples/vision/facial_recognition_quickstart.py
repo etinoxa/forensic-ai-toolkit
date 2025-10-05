@@ -1,13 +1,24 @@
 # examples/vision/facial_recognition_quickstart.py
-from __future__ import annotations
+"""
+Face Recognition Quickstart - Uses config.yaml for all settings.
+Run-specific overrides can be passed as CLI arguments.
+"""
 
-import os, sys, pathlib, argparse, logging, uuid, warnings
+import os
+import sys
+import pathlib
+import argparse
+import logging
+import uuid
+import warnings
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-# .env first (silence TF before heavy imports)
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
+
+# Silence warnings
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 warnings.filterwarnings(
@@ -18,59 +29,59 @@ warnings.filterwarnings(
 )
 
 from fait.core.logging_config import setup_logging
-from fait.core.config_io import load_yaml
+from fait.core.app_config import get_app_config
 from fait.core.registry import get_embedder
 from fait.vision.pipelines.facial_recognition_pipeline import run_facial_recognition
-from fait.vision.facial_recognition.models import arcface as _arcface_model
-from fait.vision.facial_recognition.models import clip as _clip_model
 
-
-
-def resolve_path(p: str | None, fallback: pathlib.Path) -> pathlib.Path:
-    if not p:
-        return fallback
-    pp = pathlib.Path(p)
-    return (ROOT / p).resolve() if not pp.is_absolute() else pp.resolve()
+# Trigger registration
+import fait.vision.facial_recognition.models.arcface as _arcface
+import fait.vision.facial_recognition.models.clip as _clip
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Face match (YAML-driven)")
-    ap.add_argument("--config", default="configs/vision/face_match.yaml")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description="Face Recognition Quickstart")
+    parser.add_argument("--reference", help="Reference directory (overrides default)")
+    parser.add_argument("--gallery", help="Gallery directory (overrides default)")
+    parser.add_argument("--recognizer", choices=["arcface", "clip"], help="Override recognizer")
+    parser.add_argument("--metric", choices=["euclidean", "cosine", "auto"], help="Override metric")
+    parser.add_argument("--thresholds", help="Comma-separated thresholds (e.g., '0.8,0.9')")
+    parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
+    args = parser.parse_args()
 
     setup_logging()
     log = logging.getLogger("fait.vision.pipelines.face_match")
     run_id = str(uuid.uuid4())
     log.info("face_match:start", extra={"run_id": run_id})
 
-    # ---- Load YAML ----
-    cfg = load_yaml(args.config)
+    # Load application config
+    app_config = get_app_config()
+    face_config = app_config.vision.face_recognition
 
-    # ---- Resolve paths ----
-    ref_dir = resolve_path(
-        cfg.get("reference_dir"),
-        ROOT / "datasets" / "images" / "face" / "reference_images",
+    # Resolve paths
+    ref_dir = pathlib.Path(args.reference) if args.reference else (
+        ROOT / "datasets" / "images" / "face" / "reference_images"
     )
-    gal_dir = resolve_path(
-        cfg.get("gallery_dir"),
-        ROOT / "datasets" / "images" / "face" / "gallery",
+    gal_dir = pathlib.Path(args.gallery) if args.gallery else (
+        ROOT / "datasets" / "images" / "face" / "gallery"
     )
 
-    # ---- Recognizer & metric ----
-    model = str(cfg.get("recognizer", "arcface")).lower()  # arcface | clip
-    metric = cfg.get("metric", "auto").lower()             # euclidean | cosine | auto
+    # Config with CLI overrides
+    model = args.recognizer or face_config.recognizer
+    metric = args.metric or face_config.metric
     if metric == "auto":
         metric = "euclidean" if model == "arcface" else "cosine"
 
-    thresholds = cfg.get("thresholds", [0.8, 0.9])  # floats
-    plot_results = bool(cfg.get("plot_results", True))
+    if args.thresholds:
+        thresholds = [float(t.strip()) for t in args.thresholds.split(",")]
+    else:
+        thresholds = face_config.thresholds
 
-    # ---- Basic sanity ----
+    plot_results = not args.no_plot and face_config.plot_results
+
+    # Sanity checks
     for p in (ref_dir, gal_dir):
         if not p.exists():
             raise FileNotFoundError(f"Path not found: {p}")
-    if not thresholds or not isinstance(thresholds, (list, tuple)):
-        raise ValueError("Invalid thresholds in YAML (expected list of floats).")
 
     log.info("face_match:config", extra={
         "recognizer": model,
@@ -81,33 +92,40 @@ def main() -> None:
         "plot_results": plot_results,
     })
 
-    # ---- Run ----
+    print("=== Face Recognition Configuration ===")
+    print(f"Recognizer    : {model}")
+    print(f"Metric        : {metric}")
+    print(f"Thresholds    : {thresholds}")
+    print(f"Reference dir : {ref_dir}")
+    print(f"Gallery dir   : {gal_dir}")
+    print(f"Plot results  : {plot_results}")
+    print()
+
+    # Run
     embedder = get_embedder(model)
     res = run_facial_recognition(
         embedder=embedder,
         reference_dir=str(ref_dir),
         gallery_dir=str(gal_dir),
-        thresholds=[float(t) for t in thresholds],
+        thresholds=thresholds,
         metric=metric,
         plot_results=plot_results,
     )
 
     print("\n=== FACE MATCH SUMMARY ===")
+    print(f"Model                 : {res['model']}")
+    print(f"Metric                : {res['metric']}")
+    print(f"Processed             : {res['processed']}")
     print(f"Matches per threshold : {res['matches_per_threshold']}")
-    print(f"Closest (top 10)      : {res.get('top10', [])}")
-    print(f"Report                : {res.get('report_path')}")
-    print(f"Plot                  : {res.get('plot_path')}")
-    print(f"Run ID                : {run_id}")
+    if res.get('closest'):
+        print(f"\nTop 10 closest:")
+        for i, (name, dist) in enumerate(res['closest'][:10], 1):
+            print(f"  {i:2d}. {name:<30} ({metric}: {dist:.4f})")
+    print(f"\nReport    : {res.get('report_path')}")
+    print(f"Plot      : {res.get('plot_path')}")
+    print(f"Output dir: {res.get('output_dir')}")
+    print(f"Run ID    : {run_id}")
 
 
 if __name__ == "__main__":
     main()
-
-
-'''
-Sample usage:
-match faces with arcface; reference_dir=datasets/images/face/reference_images; gallery_dir=datasets/images/face/gallery; thresholds=[0.8,0.9]; plot_results=true
-
-match faces with clip; reference_dir=datasets/images/face/reference_images; gallery_dir=datasets/images/face/gallery; thresholds=[0.8,0.9]; plot_results=true
-'''
-

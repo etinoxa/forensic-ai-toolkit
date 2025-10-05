@@ -1,10 +1,21 @@
-# tests/unit/vision/test_deformable_detr_parse.py
+# tests/unit/vision/object_detection/test_deformable_detr_parse.py
+import pytest
+pytestmark = pytest.mark.requires_models
 from types import SimpleNamespace
 import torch
 import pytest
 from PIL import Image
+import sys
+from pathlib import Path
+
+# Add src to path if not already there
+src_path = Path(__file__).resolve().parents[4] / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
+
 import fait.core.paths as paths_mod
-import fait.vision.object_detection.models.deformable_detr as detrmod
+# Use direct file import instead of package import
+from fait.vision.object_detection.models import deformable_detr as detrmod
 from fait.vision.object_detection.base import Detection
 
 def test_detr_detect_minimal(monkeypatch, tmp_paths):

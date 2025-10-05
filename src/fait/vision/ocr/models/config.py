@@ -2,7 +2,8 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, fields, is_dataclass, MISSING
 from typing import Dict, List, Optional, Literal, Any, get_origin, get_args
-import os, yaml, pathlib
+import os, yaml
+from pathlib import Path
 
 # ----- Engine configs -----
 @dataclass
@@ -49,24 +50,22 @@ Verifier = Literal["trocr", "donut", "tesseract", "paddleocr", "doctr", "none", 
 
 @dataclass
 class EngineCfg:
-    # Generic knobs all models may use (extra keys in YAML will be ignored by the pipeline)
-    @dataclass
-    class EngineCfg:
-        enabled: bool = True
-        lang: Optional[str] = None
-        model_id: Optional[str] = None
-        det_arch: Optional[str] = None
-        reco_arch: Optional[str] = None
+    """Generic engine configuration that all OCR engines can use."""
+    enabled: bool = True
+    lang: Optional[str] = None
+    model_id: Optional[str] = None
+    det_arch: Optional[str] = None
+    reco_arch: Optional[str] = None
 
-        # Tesseract specifics
-        tesseract_cmd: Optional[str] = None
-        psm: Optional[int] = None
-        oem: Optional[int] = None
+    # Tesseract specifics
+    tesseract_cmd: Optional[str] = None
+    psm: Optional[int] = None
+    oem: Optional[int] = None
 
-        # PaddleOCR detection parameters - ADD THESE!
-        det_db_thresh: Optional[float] = None
-        det_db_box_thresh: Optional[float] = None
-        det_db_unclip_ratio: Optional[float] = None
+    # PaddleOCR detection parameters
+    det_db_thresh: Optional[float] = None
+    det_db_box_thresh: Optional[float] = None
+    det_db_unclip_ratio: Optional[float] = None
 
 @dataclass
 class FusionCfg:
@@ -162,11 +161,16 @@ def _to_fusion_cfg(d: Optional[dict]) -> FusionCfg:
     return FusionCfg(**{k: v for k, v in d.items() if k in allowed})
 
 # ----- Loader -----
-def load_ocr_config(yaml_path: str | pathlib.Path) -> OcrConfig:
+def load_ocr_config(yaml_path: str | Path) -> OcrConfig:
     with open(yaml_path, "r", encoding="utf-8") as f:
         y = yaml.safe_load(f) or {}
 
     data = y.get("ocr", y) or {}
+
+    # Load application config for defaults
+    from fait.core.app_config import get_app_config
+    app_config = get_app_config()
+
     engines_dict = data.get("engines") or {}
     engines = {name: _to_engine_cfg(cfg) for name, cfg in engines_dict.items()}
     fusion = _to_fusion_cfg(data.get("fusion"))
@@ -174,10 +178,10 @@ def load_ocr_config(yaml_path: str | pathlib.Path) -> OcrConfig:
     return OcrConfig(
         gallery_dir=data.get("gallery_dir"),
         output_dir=data.get("output_dir"),
-        min_file_kb=int(data.get("min_file_kb", 10)),
-        min_dim_px=int(data.get("min_dim_px", 100)),
-        rotations=[int(x) for x in (data.get("rotations") or [0, 90, 180, 270])],
+        min_file_kb=int(data.get("min_file_kb", app_config.vision.ocr.min_file_kb)),
+        min_dim_px=int(data.get("min_dim_px", app_config.vision.ocr.min_dim_px)),
+        rotations=[int(x) for x in (data.get("rotations") or app_config.vision.ocr.rotations)],
         engines=engines,
-        engine_order=list(data.get("engine_order") or ["trocr","donut","tesseract","paddleocr","doctr"]),
+        engine_order=list(data.get("engine_order") or app_config.vision.ocr.engine_order),  # ← Changed from .engines
         fusion=fusion,
     )

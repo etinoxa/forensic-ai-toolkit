@@ -168,3 +168,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+'''
+Sample usage:
+match faces with arcface; reference_dir=datasets/images/face/reference_images; gallery_dir=datasets/images/face/gallery; thresholds=[0.8,0.9]; plot_results=true
+
+match faces with clip; reference_dir=datasets/images/face/reference_images; gallery_dir=datasets/images/face/gallery; thresholds=[0.8,0.9]; plot_results=true
+'''

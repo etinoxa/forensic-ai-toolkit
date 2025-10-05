@@ -12,7 +12,7 @@ from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
 from fait.vision.object_detection.base import Detection
 
-log = logging.getLogger("fait.vision.object_detection.deformabledetr")
+log = logging.getLogger("fait.vision.object_detection.deformable_detr")
 
 @dataclass
 class DefDETRConfig:

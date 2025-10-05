@@ -1,0 +1,297 @@
+# config.yaml - FAIT Application Configuration
+# ==============================================
+# This file defines how FAIT behaves. Deployment settings (paths, secrets, etc.) go in .env
+#
+# Precedence: CLI arguments > Environment variables (testing only) > config.yaml > Hard-coded defaults
+#
+# To switch between presets: python scripts/use_config.py <preset_name>
+# Available presets: balanced, fast, high_accuracy (in configs/presets/)
+
+# ==============================================================================
+# AUDIO PIPELINES
+# ==============================================================================
+audio:
+  speaker_recognition:
+    # Strategy: How to match speakers
+    # Options: speechbrain_only, titanet_only, detector_only, two_stage, three_stage
+    # - speechbrain_only: Use ECAPA-TDNN only (fast, good accuracy)
+    # - titanet_only: Use TitaNet-Large only (slower, very accurate)
+    # - detector_only: Use a single detector model (titanet or wavlm)
+    # - two_stage: Primary (SpeechBrain) + Detector (TitaNet or WavLM) with fusion
+    # - three_stage: Primary + Detector + Tertiary model with multi-stage fusion
+    strategy: three_stage
+
+    # Detector: Which model to use as detector/secondary
+    # Options: titanet, wavlm, none
+    # - titanet: NVIDIA TitaNet-Large (high accuracy, slower)
+    # - wavlm: Microsoft WavLM (good accuracy, faster)
+    # - none: No detector (for single-stage strategies)
+    detector: wavlm
+
+    # Tertiary: Third model for three_stage strategy
+    # Options: titanet, wavlm, none
+    # Should be different from detector. Ignored unless strategy is three_stage.
+    tertiary: titanet
+
+    # Fusion parameters for multi-stage strategies
+    fusion:
+      # Fusion method: How to combine scores
+      # Options: weighted, product, sum, max, logistic
+      # - weighted: Linear combination (alpha * score1 + (1-alpha) * score2)
+      # - product: Multiply scores (both must agree)
+      # - sum: Add z-normalized scores
+      # - max: Take maximum (optimistic fusion)
+      # - logistic: Learned sigmoid combination
+      method: weighted
+
+      # Alpha: Weight for primary model in weighted fusion (0.0-1.0)
+      # Higher = trust primary more, lower = trust detector more
+      alpha: 0.60
+
+      # Tau_star: Decision threshold for fused score
+      # Accept match if fused_score >= tau_star
+      tau_star: 0.70
+
+    # Model identifiers (HuggingFace repo IDs)
+    models:
+      speechbrain_id: speechbrain/spkrec-ecapa-voxceleb
+      titanet_id: nvidia/speakerverification_en_titanet_large
+      wavlm_id: microsoft/wavlm-base-plus
+
+# ==============================================================================
+# VISION PIPELINES
+# ==============================================================================
+vision:
+  # ----------------------------------------------------------------------------
+  # Object Detection (Weapons, Contraband, etc.)
+  # ----------------------------------------------------------------------------
+  object_detection:
+    # Strategy: How to detect objects
+    # Options: gdino_only, detector_only, two_stage
+    # - gdino_only: GroundingDINO open-vocabulary detection only
+    # - detector_only: Closed-set detector (YOLO or DETR) only
+    # - two_stage: GroundingDINO proposes regions → Detector verifies
+    strategy: two_stage
+
+    # Verifier: Which detector to use for verification/detection
+    # Options: yolo, deformable_detr, none
+    # - yolo: Fast, good for real-time (YOLOv8)
+    # - deformable_detr: More accurate, slower (Deformable DETR)
+    # - none: No verifier (for gdino_only strategy)
+    verifier: deformable_detr
+
+    # Model identifiers
+    models:
+      gdino_model_id: IDEA-Research/grounding-dino-base
+      yolo_model_id: yolov8n.pt  # Options: yolov8n.pt (nano), yolov8s.pt (small), yolov8m.pt (medium)
+      detr_model_id: SenseTime/deformable-detr  # Or: facebook/detr-resnet-50
+
+    # GroundingDINO settings (open-vocabulary detector)
+    gdino:
+      # Box threshold: Minimum confidence for proposed regions (0.0-1.0)
+      # Lower = more proposals (higher recall), higher = fewer proposals (higher precision)
+      box_threshold: 0.35
+
+      # Text threshold: Minimum text-image alignment score (0.0-1.0)
+      # Lower = more liberal matching, higher = stricter matching
+      text_threshold: 0.35
+
+      # NMS IoU: Non-maximum suppression threshold (0.0-1.0)
+      # Higher = keep more overlapping boxes, lower = remove more overlaps
+      nms_iou: 0.50
+
+      # Long side: Upsample images smaller than this (pixels)
+      # 0 = disable upsampling. Helps with small objects in low-res images.
+      long_side: 1024
+
+      # Box expand: Expand proposed boxes by this ratio (0.0-1.0)
+      # Adds padding around detections. 0.2 = 20% larger boxes.
+      box_expand: 0.20
+
+      # Normalize prompts: Convert to lowercase and add periods
+      normalize_prompts: true
+
+      # Add relational prompts: Generate variants like "person with X", "person holding X"
+      # Helps detect objects in context (e.g., "person with knife" vs just "knife")
+      add_relational_prompts: false
+
+    # YOLO settings (closed-set detector)
+    yolo:
+      score_threshold: 0.25  # Minimum detection confidence
+      nms_iou: 0.50         # Non-maximum suppression threshold
+      imgsz: 640            # Input image size (pixels). Smaller = faster, larger = more accurate
+
+    # Deformable DETR settings (closed-set detector)
+    detr:
+      score_threshold: 0.25  # Minimum detection confidence
+      nms_iou: 0.50         # Non-maximum suppression threshold
+
+    # Fusion parameters (for two_stage strategy)
+    fusion:
+      # Fusion rule: How to combine GroundingDINO and detector scores
+      # Options: and, weighted, product, max, sum, logistic
+      # - and: Both must pass threshold (conservative)
+      # - weighted: Combine with alpha weight
+      # - product: Multiply scores
+      # - max: Take maximum score
+      # - sum: Add z-normalized scores
+      # - logistic: Learned sigmoid combination
+      rule: and
+
+      # Alpha: Weight for GroundingDINO score (0.0-1.0)
+      # Used when rule=weighted. Higher = trust GroundingDINO more.
+      alpha: 0.7
+
+      # Tau_star: Decision threshold for fused score
+      # Accept detection if fused_score >= tau_star
+      tau_star: 0.60
+
+      # IoU gate: Minimum overlap between GroundingDINO and detector boxes
+      # Detector must overlap with proposal by at least this much (0.0-1.0)
+      iou_gate: 0.50
+
+      # Borderline window: Score range for manual review queue
+      # Detections within ±window of threshold go to review
+      borderline_window: 0.05
+
+      # GDINO-only default threshold (when verifier=none)
+      gdino_only_default_tau: 0.50
+
+      # Per-class thresholds (when rule=and)
+      # Stricter thresholds for high-risk objects
+      class_thresholds:
+        gun: 0.40
+        handgun: 0.40
+        pistol: 0.40
+        revolver: 0.40
+        knife: 0.45
+        kitchen knife: 0.45
+        chef knife: 0.45
+
+    # Detector-only settings (when strategy=detector_only)
+    detector_only:
+      # Default acceptance threshold
+      default_tau: 0.50
+
+      # Per-class thresholds (optional)
+      class_thresholds: {}
+
+  # ----------------------------------------------------------------------------
+  # OCR (Optical Character Recognition)
+  # ----------------------------------------------------------------------------
+  ocr:
+    # Strategy: How to extract text
+    # Options: first_nonempty, best_of, consensus, two_stage, detector_only
+    # - first_nonempty: Try engines in order, stop at first non-empty result (fast)
+    # - best_of: Try all engines, pick highest confidence (balanced)
+    # - consensus: Try all engines, prefer agreement (accurate)
+    # - two_stage: Detector (Paddle) finds text regions → Verifier (TrOCR/etc) reads them
+    # - detector_only: Paddle detects and recognizes in one pass
+    strategy: first_nonempty
+
+    # Verifier: Which engine to use for verification/recognition
+    # Options: tesseract, trocr, doctr, donut, paddle, none
+    # Used in two_stage (reads detected regions) and detector_only (recognizes full image)
+    verifier: none
+
+    # Engine order: Try engines in this sequence
+    # Engines are tried left-to-right. Only affects first_nonempty, best_of, consensus strategies.
+    # Options: paddle, trocr, donut, tesseract, doctr
+    # - paddle: PaddleOCR (fast, good for multi-language, finds text regions)
+    # - trocr: Microsoft TrOCR (transformer-based, excellent for clean printed text)
+    # - donut: Naver Donut (document understanding, good for structured docs)
+    # - tesseract: Google Tesseract (traditional, good for scanned docs)
+    # - doctr: DocTR (deep learning, good balance of speed/accuracy)
+    engine_order: [tesseract]
+#    engine_order: [paddle, tesseract, trocr, donut, doctr]
+
+    # Pre-processing filters
+    # Skip images that don't meet these criteria
+    min_file_kb: 10   # Minimum file size in KB (filters out tiny/corrupt images)
+    min_dim_px: 100   # Minimum width AND height in pixels
+
+    # Rotation attempts: Try these angles if no text found (degrees)
+    # [0] = no rotation, [0,90,180,270] = try all cardinal directions
+    # More rotations = slower but handles rotated documents
+    rotations: [0, 90, 180, 270]
+
+    # Engine-specific configurations
+    engines:
+      # PaddleOCR: Multi-language OCR with text detection
+      paddle:
+        enabled: true
+        lang: en  # Language code (en, ch, fr, de, etc.)
+
+        # Detection parameters (fine-tune for your document quality)
+        det_db_thresh: 0.2        # Binarization threshold (lower = more sensitive)
+        det_db_box_thresh: 0.3    # Box confidence threshold (lower = more boxes)
+        det_db_unclip_ratio: 2.0  # Box expansion ratio (higher = larger boxes)
+
+      # TrOCR: Transformer-based OCR (excellent for clean printed text)
+      trocr:
+        enabled: true
+        # Model options:
+        # - microsoft/trocr-base-printed (faster, good quality)
+        # - microsoft/trocr-large-printed (slower, best quality)
+        # - microsoft/trocr-base-handwritten (for handwriting)
+        model_id: microsoft/trocr-large-printed
+
+      # Donut: Document understanding transformer
+      donut:
+        enabled: true
+        model_id: naver-clova-ix/donut-base
+
+      # Tesseract: Traditional OCR (good for scanned documents)
+      tesseract:
+        enabled: true
+        lang: eng  # Language code (eng, fra, deu, etc.)
+
+        # Path to tesseract executable
+        # Windows: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+        # Linux/Mac: Usually auto-detected, or "/usr/bin/tesseract"
+        tesseract_cmd: null
+
+        # PSM (Page Segmentation Mode): How to segment the page
+        # Common values:
+        # - 3: Fully automatic (default)
+        # - 6: Assume uniform block of text
+        # - 11: Sparse text, find as much as possible
+        # - 13: Raw line (bypass all segmentation)
+        psm: null
+
+        # OEM (OCR Engine Mode): Which recognition engine
+        # - 1: Neural nets LSTM (best)
+        # - 3: Default (LSTM + legacy)
+        oem: null
+
+      # DocTR: Deep learning OCR
+      doctr:
+        enabled: true
+        det_arch: db_resnet50      # Detection architecture
+        reco_arch: crnn_vgg16_bn   # Recognition architecture
+
+  # ----------------------------------------------------------------------------
+  # Face Recognition
+  # ----------------------------------------------------------------------------
+  face_recognition:
+    # Recognizer: Which embedding model to use
+    # Options: arcface, clip
+    # - arcface: InsightFace ArcFace (specialized for faces, very accurate)
+    # - clip: OpenAI CLIP (general vision model, faster but less accurate)
+    recognizer: arcface
+
+    # Metric: Distance/similarity metric
+    # Options: euclidean, cosine, auto
+    # - euclidean: L2 distance (lower = more similar). Good for ArcFace.
+    # - cosine: Cosine similarity (higher = more similar). Good for CLIP.
+    # - auto: euclidean for ArcFace, cosine for CLIP
+    metric: auto
+
+    # Thresholds: Match acceptance thresholds
+    # Multiple thresholds create different "buckets" of matches
+    # For euclidean (ArcFace): Lower = stricter. Typical range: 0.6-1.0
+    # For cosine (CLIP): Higher = stricter. Typical range: 0.7-0.95
+    thresholds: [0.80, 0.90]
+
+    # Plot results: Generate distance/similarity distribution plots
+    plot_results: true

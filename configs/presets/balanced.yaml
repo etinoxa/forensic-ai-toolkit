@@ -1,0 +1,20 @@
+# configs/presets/balanced.yaml
+# Balanced - good accuracy with reasonable speed (same as main config.yaml)
+
+audio:
+  speaker_recognition:
+    strategy: two_stage
+    detector: titanet
+
+vision:
+  object_detection:
+    strategy: detector_only
+    verifier: deformable_detr
+
+  ocr:
+    strategy: first_nonempty
+    engine_order: [paddle, trocr, donut, tesseract]
+
+  face_recognition:
+    recognizer: arcface
+    thresholds: [0.80, 0.90]

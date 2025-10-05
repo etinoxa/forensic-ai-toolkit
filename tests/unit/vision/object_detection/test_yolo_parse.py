@@ -1,4 +1,6 @@
 # tests/unit/vision/test_yolo_parse.py
+import pytest
+pytestmark = pytest.mark.requires_models
 import torch
 import fait.vision.object_detection.models.yolo as y
 from fait.vision.object_detection.models.yolo import YOLODetector, YoloConfig

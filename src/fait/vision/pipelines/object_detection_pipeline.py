@@ -1,6 +1,6 @@
 # src/fait/vision/pipelines/object_detection_pipeline.py
 
-from typing import List, Dict, Optional, Literal
+from typing import List, Dict, Optional, Literal, Tuple
 import os, json, time, shutil, re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -11,11 +11,8 @@ import torch
 from PIL import Image
 
 from fait.core.paths import get_paths
+from fait.core.app_config import get_app_config
 from fait.core.utils import ProgressMeter, ensure_folder, file_md5, write_object_report, fuse_scores
-from fait.vision.services.object_detection_service import get_object_service
-from fait.vision.object_detection.models.grounding_dino import GDINOConfig
-from fait.vision.object_detection.models.deformable_detr import DefDETRConfig
-from fait.vision.object_detection.models.yolo import YoloConfig
 
 log = logging.getLogger("fait.vision.pipelines.object_detection")
 
@@ -65,6 +62,13 @@ class DetectorOnlyConfig:
 
 @dataclass
 class ScreenConfig:
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        from fait.vision.object_detection.models.grounding_dino import GDINOConfig
+        from fait.vision.object_detection.models.deformable_detr import DefDETRConfig
+        from fait.vision.object_detection.models.yolo import YoloConfig
+
     prompts: List[str]
     gallery_dir: str
     output_dir: Optional[str] = None
@@ -77,34 +81,57 @@ class ScreenConfig:
     strategy: Literal["gdino_only", "detector_only", "two_stage", "auto"] = "two_stage"
     verifier: Literal["none", "deformable_detr", "yolo", "auto"] = "deformable_detr"
 
-    gdino: GDINOConfig = GDINOConfig()
-    detr: DefDETRConfig = DefDETRConfig()
-    yolo: YoloConfig = YoloConfig()
+    gdino: "GDINOConfig" = None
+    detr: "DefDETRConfig" = None
+    yolo: "YoloConfig" = None
     fusion: FusionConfig = FusionConfig()
     detector_only: DetectorOnlyConfig = DetectorOnlyConfig()
 
     # optional custom run name
     run_name: Optional[str] = None
 
-def _resolve_strategy_verifier(cfg: ScreenConfig) -> tuple[str, str]:
+
+def _resolve_strategy_verifier(cfg: ScreenConfig) -> Tuple[str, str]:
+    """
+    Resolve strategy and verifier with proper precedence:
+
+    1. Explicit non-"auto" values in cfg
+    2. Environment variables (testing overrides)
+    3. Application config from config.yaml
+    4. Hard-coded defaults
+    """
+    import os
+    from fait.core.app_config import get_app_config
+
     s = (cfg.strategy or "auto").strip().lower()
     v = (cfg.verifier or "auto").strip().lower()
-    env_s = os.getenv("FAIT_OBJECT_STRATEGY", "").strip().lower()
-    env_v = os.getenv("FAIT_OBJECT_VERIFIER", "").strip().lower()
 
-    # 1) Strategy: env overrides when cfg is "auto"
+    # If both are auto, check environment then config
+    if s == "auto" and v == "auto":
+        env_s = os.getenv("FAIT_OBJECT_STRATEGY", "").strip().lower()
+        env_v = os.getenv("FAIT_OBJECT_VERIFIER", "").strip().lower()
+
+        if env_s or env_v:
+            # Environment override
+            s = env_s or "auto"
+            v = env_v or "auto"
+        else:
+            # Load from application config
+            app_config = get_app_config()
+            s = app_config.vision.object_detection.strategy
+            v = app_config.vision.object_detection.verifier
+
+    # Apply defaults for any remaining "auto"
     if s == "auto":
-        s = env_s or "two_stage"  # sensible default if nothing set
-
-    # 2) Verifier: env overrides when cfg is "auto"
+        s = "detector_only"
     if v == "auto":
-        v = env_v or ("none" if s == "gdino_only" else "yolo")
+        v = "deformable_detr" if s in {"detector_only", "two_stage"} else "none"
 
-    # 3) Clamp combos
+    # Validation
     if s == "gdino_only":
         v = "none"
     if s in {"detector_only", "two_stage"} and v not in {"yolo", "deformable_detr"}:
-        v = "yolo"  # fallback
+        v = "yolo"
 
     return s, v
 
@@ -132,8 +159,23 @@ def _crop(img: Image.Image, xyxy) -> Image.Image:
     return img.crop((x1, y1, x2, y2))
 
 def run_object_detection(cfg: ScreenConfig) -> Dict:
+    from fait.vision.services.object_detection_service import get_object_service
+    from fait.vision.object_detection.models.grounding_dino import GDINOConfig
+    from fait.vision.object_detection.models.deformable_detr import DefDETRConfig
+    from fait.vision.object_detection.models.yolo import YoloConfig
+
+    # Initialize defaults if needed
+    if cfg.gdino is None:
+        cfg.gdino = GDINOConfig()
+    if cfg.detr is None:
+        cfg.detr = DefDETRConfig()
+    if cfg.yolo is None:
+        cfg.yolo = YoloConfig()
+
     t0 = time.time()
     paths = get_paths()
+
+    from fait.vision.services.object_detection_service import get_object_service
 
     env_prog = os.getenv("FAIT_PROGRESS", "").strip().lower()
     if env_prog in {"tqdm", "log", "none"}:
