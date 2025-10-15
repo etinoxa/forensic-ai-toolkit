@@ -84,6 +84,7 @@ class VisionOCRConfig:
     # Model identifiers
     trocr_model_id: str = "microsoft/trocr-large-printed"
     donut_model_id: str = "naver-clova-ix/donut-base"
+    olmocr_model_id: str = "allenai/olmOCR-7B-0725"
     tesseract_lang: str = "eng"
     tesseract_cmd: Optional[str] = None
     paddle_lang: str = "en"
@@ -236,6 +237,9 @@ class FaitConfig:
                                                                                              "microsoft/trocr-large-printed"),
             donut_model_id=models.get("donut_model_id") or engines_data.get("donut", {}).get("model_id",
                                                                                              "naver-clova-ix/donut-base"),
+            olmocr_model_id=models.get("olmocr_model_id") or engines_data.get("olmocr", {}).get("model_id",
+                                                                                                "allenai/olmOCR-7B-0725"),
+
             tesseract_lang=models.get("tesseract_lang") or engines_data.get("tesseract", {}).get("lang", "eng"),
             tesseract_cmd=engines_data.get("tesseract", {}).get("tesseract_cmd"),
             paddle_lang=models.get("paddle_lang") or engines_data.get("paddle", {}).get("lang", "en"),

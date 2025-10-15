@@ -35,6 +35,11 @@ class DocTRCfg:
     det_arch: str = "db_resnet50"
     reco_arch: str = "crnn_vgg16_bn"
 
+@dataclass
+class OlmOCRCfg:
+    enabled: bool = True
+    model_id: str = "allenai/olmOCR-7B-0725"
+
 # Bundle for service-level engine settings (optional convenience)
 @dataclass
 class OcrServiceCfg:
@@ -43,10 +48,11 @@ class OcrServiceCfg:
     trocr:     TrOCRCfg     = TrOCRCfg()
     donut:     DonutCfg     = DonutCfg()
     doctr:     DocTRCfg     = DocTRCfg()
+    olmocr: OlmOCRCfg = OlmOCRCfg()
 
 # ----- Fusion / strategy -----
 Strategy = Literal["first_nonempty", "best_of", "consensus", "two_stage", "auto"]
-Verifier = Literal["trocr", "donut", "tesseract", "paddleocr", "doctr", "none", "auto"]
+Verifier = Literal["trocr", "donut", "tesseract", "paddleocr", "doctr", "olmocr", "none", "auto"]
 
 @dataclass
 class EngineCfg:

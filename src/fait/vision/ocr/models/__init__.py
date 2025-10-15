@@ -26,6 +26,10 @@ def _import_doctr():
     from .doctr_engine import DocTREngine
     return DocTREngine
 
+def _import_olmocr():
+    from .olmocr_engine import OlmOCREngine
+    return OlmOCREngine
+
 # Normalized name -> callable that returns the class (still lazy)
 _ENGINE_LOADERS: Dict[str, Callable[[], type]] = {
     "tesseract": _import_tesseract,
@@ -34,6 +38,7 @@ _ENGINE_LOADERS: Dict[str, Callable[[], type]] = {
     "trocr":     _import_trocr,
     "donut":     _import_donut,
     "doctr":     _import_doctr,
+    "olmocr": _import_olmocr,
 }
 
 ENGINE_ALIASES = sorted(set(_ENGINE_LOADERS.keys()))
@@ -100,9 +105,6 @@ class _LazyEngine:
     def lang(self):
         self._ensure()
         return getattr(self._inst, "lang", None)
-
-
-
 
 def get_engine(name: str, cfg: Optional[Any] = None):
     """

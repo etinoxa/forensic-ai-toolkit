@@ -31,12 +31,17 @@ class DocTRCfg:
     reco_arch: str = "crnn_vgg16_bn"
 
 @dataclass
+class OlmOCRCfg:
+    model_id: str = "allenai/olmOCR-7B-0725"
+
+@dataclass
 class OcrServiceCfg:
     tesseract: TesseractCfg = TesseractCfg()
     paddle: PaddleCfg = PaddleCfg()
     trocr: TrOCRCfg = TrOCRCfg()
     donut: DonutCfg = DonutCfg()
     doctr: DocTRCfg = DocTRCfg()
+    olmocr: OlmOCRCfg = OlmOCRCfg()
 
 class OcrService:
     def __init__(self, cfg: OcrServiceCfg = OcrServiceCfg()):
@@ -72,6 +77,10 @@ class OcrService:
             from fait.vision.ocr.models.doctr_engine import DocTREngine
             c = self.cfg.doctr
             eng = DocTREngine(det_arch=c.det_arch, reco_arch=c.reco_arch)
+        elif n == "olmocr":
+            from fait.vision.ocr.models.olmocr_engine import OlmOCREngine
+            c = self.cfg.olmocr
+            eng = OlmOCREngine(model_id=c.model_id, cache_dir=str(self.cache_dir))
         else:
             raise ValueError(f"Unknown OCR engine '{name}'")
 

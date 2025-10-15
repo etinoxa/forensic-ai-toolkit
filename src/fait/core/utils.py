@@ -472,9 +472,9 @@ def resolve_strategy_verifier(fu: FusionCfg) -> tuple[str, str]:
         verifier = "none"
 
     # 5) Validation for strategies that need verifiers
-    if strategy == "two_stage" and verifier not in {"tesseract", "trocr", "doctr", "donut"}:
+    if strategy == "two_stage" and verifier not in {"tesseract", "trocr", "doctr", "donut", "olmocr"}:
         verifier = "tesseract"
-    if strategy == "detector_only" and verifier not in {"paddle", "tesseract", "trocr", "doctr", "donut"}:
+    if strategy == "detector_only" and verifier not in {"paddle", "tesseract", "trocr", "doctr", "donut", "olmocr"}:
         verifier = "paddle"
 
     return strategy, verifier

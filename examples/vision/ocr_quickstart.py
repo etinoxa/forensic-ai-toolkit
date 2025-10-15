@@ -53,6 +53,11 @@ def build_engine_configs(app_config):
                 det_arch=ocr_cfg.doctr_det_arch,
                 reco_arch=ocr_cfg.doctr_reco_arch,
             )
+        elif engine_name == "olmocr":
+            engines["olmocr"] = EngineCfg(
+                enabled=True,
+                model_id=ocr_cfg.olmocr_model_id,
+            )
 
     return engines
 
@@ -64,7 +69,7 @@ def main():
     parser.add_argument("--strategy",
                         choices=["first_nonempty", "best_of", "consensus", "two_stage", "detector_only"],
                         help="Override strategy")
-    parser.add_argument("--engines", help="Comma-separated engine list (e.g., 'paddle,trocr')")
+    parser.add_argument("--engines", help="Comma-separated engine list (e.g., 'olmocr,trocr,tesseract')")
     args = parser.parse_args()
 
     setup_logging()

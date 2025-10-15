@@ -38,15 +38,6 @@ log = logging.getLogger("fait.vision.pipelines.ocr")
 
 # ---------- strategy helpers ----------
 
-# maps *_only strategies → normalized engine key
-_ONLY_MAP = {
-    "tesseract_only": "tesseract",
-    "paddle_only":    "paddle",
-    "trocr_only":     "trocr",
-    "donut_only":     "donut",
-    "doctr_only":     "doctr",
-}
-
 def _now_tag() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -215,8 +206,8 @@ def run_ocr(cfg: OcrConfig) -> Dict:
         return _engines_cache[name]
 
     # ------------- strategies -------------
-    allowed_verifiers_ts = {"tesseract", "trocr", "doctr", "donut"}  # two_stage
-    allowed_verifiers_det = {"paddle", "tesseract", "trocr", "doctr", "donut"}  # detector_only
+    allowed_verifiers_ts = {"tesseract", "trocr", "doctr", "donut", "olmocr"}  # two_stage
+    allowed_verifiers_det = {"paddle", "tesseract", "trocr", "doctr", "donut", "olmocr"}  # detector_only
 
     def _run_two_stage(img):
         # primary: Paddle (required)
@@ -225,8 +216,8 @@ def run_ocr(cfg: OcrConfig) -> Dict:
             raise RuntimeError("two_stage requires Paddle (primary) enabled.")
 
         # read verifier choice (validated elsewhere)
-        if verifier not in {"tesseract", "trocr", "doctr", "donut"}:
-            raise RuntimeError("two_stage verifier must be one of {'tesseract','trocr','doctr','donut'}")
+        if verifier not in {"tesseract", "trocr", "doctr", "donut", "olmocr"}:
+            raise RuntimeError("two_stage verifier must be one of {'tesseract','trocr','doctr','donut', 'olmocr'}")
 
         # languages: prefer engine-specific lang, default to "auto"
         lang_paddle = (cfg.engines.get("paddle") or {}).get("lang", "auto")

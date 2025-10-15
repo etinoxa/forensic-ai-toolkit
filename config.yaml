@@ -202,8 +202,8 @@ vision:
     # - donut: Naver Donut (document understanding, good for structured docs)
     # - tesseract: Google Tesseract (traditional, good for scanned docs)
     # - doctr: DocTR (deep learning, good balance of speed/accuracy)
-    engine_order: [tesseract]
-#    engine_order: [paddle, tesseract, trocr, donut, doctr]
+    engine_order: [olmocr]
+#    engine_order: [paddle, tesseract, trocr, donut, doctr, olmocr]
 
     # Pre-processing filters
     # Skip images that don't meet these criteria
@@ -217,6 +217,13 @@ vision:
 
     # Engine-specific configurations
     engines:
+      # OLM-OCR: OCR with language models (fast, good for multi-language)
+      # Requires OLM-OCR model to be installed (pip install olmocr)
+
+      olmocr:
+        enabled: true
+        model_id: allenai/olmOCR-7B-0725
+
       # PaddleOCR: Multi-language OCR with text detection
       paddle:
         enabled: true
