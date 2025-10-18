@@ -1,0 +1,101 @@
+
+================= 🧾 TRANSCRIPTION SUMMARY =================
+
+🎵 File: common_voice_yo_36520588.mp3
+🌍 Detected Language: yo (0.29)
+⏱️ Duration: 8.03 seconds
+
+🗣️  Transcription:
+ब्बू बायु बालुं बावू लिसा
+
+================================================================================
+
+🎵 File: common_voice_yo_36518280.mp3
+🌍 Detected Language: yo (0.9)
+⏱️ Duration: 9.18 seconds
+
+🗣️  Transcription:
+ändern
+
+================================================================================
+
+🎵 File: common_voice_yo_36518281.mp3
+🌍 Detected Language: yo (0.82)
+⏱️ Duration: 7.31 seconds
+
+🗣️  Transcription:
+a burul bhaju bhaja uni shou hiye loti kdsi kumpa bhae.
+
+================================================================================
+
+🎵 File: common_voice_yo_36518283.mp3
+🌍 Detected Language: yo (0.95)
+⏱️ Duration: 8.1 seconds
+
+🗣️  Transcription:
+鉄塔  해도  darkest next today LauR也是 un magu magu olun ren fi kan
+
+================================================================================
+
+🎵 File: common_voice_yo_36518282.mp3
+🌍 Detected Language: yo (0.98)
+⏱️ Duration: 4.36 seconds
+
+🗣️  Transcription:
+Kīni wān pēni ā lag bi.
+
+================================================================================
+
+🎵 File: common_voice_yo_36518279.mp3
+🌍 Detected Language: yo (0.9)
+⏱️ Duration: 5.08 seconds
+
+🗣️  Transcription:
+౏ quarterback ఓకివరా Santiago
+
+================================================================================
+
+🎵 File: meian_0001.wav
+🌍 Detected Language: ja (1.0)
+⏱️ Duration: 7.48 seconds
+
+🗣️  Transcription:
+今日疎通をよくするために、それをガリガリ書き落としてみると、まだ奥があるんです。
+
+================================================================================
+
+🎵 File: meian_0000.wav
+🌍 Detected Language: ja (1.0)
+⏱️ Duration: 8.77 seconds
+
+🗣️  Transcription:
+この前探った時は、途中にハンコンの竜巾があったので、ついそこは行き止まりだとばかりを持って会いったんですが。
+
+================================================================================
+
+🎵 File: meian_0002.wav
+🌍 Detected Language: ja (1.0)
+⏱️ Duration: 9.11 seconds
+
+🗣️  Transcription:
+つだの顔には、くしょうのうちにあわく盛り上げられたしつぼうの色が見えた。 医者は、白いダブダブした輪際の前に、
+
+================================================================================
+
+🎵 File: meian_0003.wav
+🌍 Detected Language: ja (1.0)
+⏱️ Duration: 7.44 seconds
+
+🗣️  Transcription:
+両手を組み合わせたままちょっと首を傾けた その様子がお気の毒ですが
+
+================================================================================
+
+🎵 File: meian_0005.wav
+🌍 Detected Language: ja (1.0)
+⏱️ Duration: 5.7 seconds
+
+🗣️  Transcription:
+長まで続いているとするとなおりっこないんですか そんなことはありません
+
+================================================================================

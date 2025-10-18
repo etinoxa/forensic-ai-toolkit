@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import time
+from typing import Any
 
 from fait.audio.services.speech_to_text_service import SpeechToTextService
 from fait.audio.services.translation_service import TranslationService
@@ -13,7 +14,7 @@ from fait.core.paths import get_paths
 # ==========================================================
 # 🪵 LOGGING SETUP
 # ==========================================================
-def setup_logging():
+def setup_logging() -> Path:
     """Configure logging for both console and persistent file outputs."""
     paths = get_paths()
     log_dir = Path(paths.repo_root) / ".fait" / "logs"
@@ -64,21 +65,21 @@ def write_separator(log_file: Path, title: str):
 # ==========================================================
 # 🗂️ HELPERS
 # ==========================================================
-def collect_audio_files(audio_input: Path):
+def collect_audio_files(audio_input: Path) -> list[Any]:
     """Parse input path for multiple audio files or folders."""
     audio_files = []
     path = Path(audio_input)
     if path.is_file():
         audio_files.append(path)
     elif path.is_dir():
-        for ext in [".mp3", ".wav", ".m4a", ".flac"]:
+        for ext in [".mp3", ".wav", ".m4a", ".flac", ".ogg"]:
             audio_files.extend(path.rglob(f"*{ext}"))
     else:
         print(f"⚠️ Skipping invalid path: {path}")
     return audio_files
 
 
-def resolve_output_dir(cli_output_dir: str = None):
+def resolve_output_dir(cli_output_dir: str = None) -> Any:
     """Determine where to save transcription results."""
     if cli_output_dir:
         output_dir = Path(cli_output_dir).expanduser().resolve()
@@ -104,7 +105,7 @@ def resolve_output_dir(cli_output_dir: str = None):
     return None
 
 
-def print_summary(results):
+def print_summary(results) -> str:
     """Display and return a clean transcription summary."""
     lines = ["\n================= 🧾 TRANSCRIPTION SUMMARY =================\n"]
     for r in results:

@@ -79,7 +79,7 @@ def collect_audio_files(audio_dir: Path):
     """Collect supported audio files under the given path."""
     files = []
     if audio_dir.is_dir():
-        for ext in [".mp3", ".wav", ".m4a", ".flac"]:
+        for ext in [".mp3", ".wav", ".m4a", ".flac", ".ogg"]:
             files.extend(audio_dir.rglob(f"*{ext}"))
     elif audio_dir.is_file():
         files.append(audio_dir)
