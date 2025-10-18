@@ -184,3 +184,14 @@ def setup_logging() -> None:
     cfg = get_logging_config()
     ensure_folder(get_paths().logs)
     logging.config.dictConfig(cfg)
+
+# --- Unified logger access for all FAIT modules ---
+def get_logger(name: str) -> logging.Logger:
+    """
+    Returns a configured FAIT logger instance by name.
+    Ensures that setup_logging() is called before use.
+    """
+    # If logging hasn't been configured yet, do it now
+    if not logging.getLogger().hasHandlers():
+        setup_logging()
+    return logging.getLogger(name)
