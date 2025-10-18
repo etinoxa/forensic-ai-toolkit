@@ -51,8 +51,10 @@ class FaitPaths:
     models_ocr: Path
     models_audio: Path
     models_speaker_recognition: Path
+    models_speech_to_text: Path
     models_llm: Path
     logs: Path
+    config: Path
     outputs: Path
     embeddings_cache: Path
 
@@ -78,6 +80,8 @@ def get_paths() -> FaitPaths:
         models_ocr=models_vision / "ocr",
         models_audio=models_audio,
         models_speaker_recognition=models_audio / "speaker_recognition",
+        models_speech_to_text=models_audio / "speech_to_text",
+        config=root / "config.yaml",
         models_llm=models_cache / "llm",
         logs=Path(os.getenv("FAIT_LOGS_DIR", str(fait_root / "logs"))),
         outputs=Path(os.getenv("FAIT_OUTPUTS_DIR", str(fait_root / "outputs"))),
@@ -96,3 +100,5 @@ def reset_paths_for_tests() -> None:
 def ensure_on_first_write(p: Path) -> None:
     # call this only when you’re about to write; no-op otherwise
     p.mkdir(parents=True, exist_ok=True)
+
+paths = get_paths()

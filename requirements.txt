@@ -1,6 +1,4 @@
-
-
-#Facial Fecognition
+# Facial Recognition
 insightface
 opencv-python
 open_clip_torch
@@ -9,16 +7,15 @@ torchvision
 onnxruntime
 ultralytics
 
-#OCR
-
+# OCR
 paddlepaddle
 paddleocr
 rapidfuzz
-#easyocr
+# easyocr
 pytesseract
 python-doctr
 
-#NLP
+# NLP / LLM
 transformers
 scikit-learn
 torch
@@ -32,14 +29,15 @@ einops
 pydantic
 python-dotenv
 
-#AUDIO
+# AUDIO / SPEECH
 speechbrain
+openai-whisper
+torchaudio
 librosa
 soundfile
 imageio_ffmpeg
 webrtcvad
 imageio
-
 
 # Other dependencies
 numpy
@@ -49,23 +47,24 @@ pathlib
 matplotlib
 pandas
 ipywidgets
-ultralytics
 tensorflow
 typing-extensions
 einops
 rich
+pyyaml  # for YAML config loading
 
-
-
-#audio
+# Audio embeddings
 resemblyzer
 speechbrain
 librosa
 soundfile
 imageio-ffmpeg
 
-#Database
+# Database / Vector Store
 chromadb
 
+# NVIDIA / NeMo (optional ASR models)
 nemo_toolkit[asr]
+
+# Compatibility
 protobuf==5.28.3

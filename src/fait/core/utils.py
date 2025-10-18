@@ -994,6 +994,32 @@ def human_size(n_bytes: float | int, si: bool = False) -> str:
             return f"{sign}{n:0.1f} {u}"
         n /= base
 
+
+# ================================================================
+# YAML LOADER
+# ================================================================
+import yaml
+
+def load_yaml(path):
+    """
+    Load a YAML file safely.
+
+    Args:
+        path (str | Path): Path to the YAML file.
+    Returns:
+        dict: Parsed YAML content.
+    """
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"❌ YAML config not found: {p}")
+
+    with open(p, "r", encoding="utf-8") as f:
+        try:
+            return yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            raise RuntimeError(f"❌ Failed to parse YAML file {p}: {e}")
+
 # ───────────────────────────── Exports ─────────────────────────────
 
 __all__ = [

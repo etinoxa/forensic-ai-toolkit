@@ -58,6 +58,22 @@ audio:
       titanet_id: nvidia/speakerverification_en_titanet_large
       wavlm_id: microsoft/wavlm-base-plus
 
+  speech_to_text:
+    engine: whisper-faster        # or speechbrain / whisper
+    model_size: small             # whisper model size
+    model_id: None                  # speechbrain/asr-transformer-transformerlm-librispeech  # used only when engine=speechbrain
+    device: cpu                   # "cpu", "cuda", or "mps"
+    translate_to: null            # fr, en, es, de, zh, etc. or null to skip translation
+    output_dir: .fait/outputs/audio/speech_to_text            # Directory to save transcriptions (null = don't save)
+
+    # Directory for downloaded or cached Speech to Text models
+    cache_dir: .fait/models/audio/speech_to_text
+
+    # Additional Speech to Text tuning options (optional)
+    beam_size: 5
+    vad_filter: true
+    save_intermediate: false
+
 # ==============================================================================
 # VISION PIPELINES
 # ==============================================================================
