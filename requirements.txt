@@ -37,6 +37,7 @@ speechbrain
 librosa
 soundfile
 imageio_ffmpeg
+static-ffmpeg
 webrtcvad
 imageio
 

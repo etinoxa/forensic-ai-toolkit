@@ -278,7 +278,7 @@ vision:
     # Options: arcface, clip
     # - arcface: InsightFace ArcFace (specialized for faces, very accurate)
     # - clip: OpenAI CLIP (general vision model, faster but less accurate)
-    recognizer: arcface
+    recognizer: clip
 
     # Metric: Distance/similarity metric
     # Options: euclidean, cosine, auto
@@ -295,3 +295,66 @@ vision:
 
     # Plot results: Generate distance/similarity distribution plots
     plot_results: true
+
+# ==============================================================================
+# VIDEO FORENSIC ANALYSIS
+# ==============================================================================
+video:
+  extraction:
+    # Audio extraction settings
+    # Format: Output audio format
+    # Options: wav, mp3, flac, m4a
+    # - wav: Uncompressed PCM (recommended for forensics)
+    # - mp3: Lossy compression (smaller files)
+    # - flac: Lossless compression
+    # - m4a: AAC compression
+    audio_format: wav
+
+    # Sample rate in Hz (16000 is standard for speech analysis)
+    audio_sample_rate: 16000
+
+    # Number of audio channels
+    # Options: 1 (mono), 2 (stereo)
+    # Mono recommended for forensic speech analysis
+    audio_channels: 1
+
+    # Frame extraction rate (frames per second)
+    # Examples:
+    # - 0.5 = 1 frame every 2 seconds (fast, may miss brief events)
+    # - 1.0 = 1 frame per second (balanced)
+    # - 2.0 = 2 frames per second (thorough, slower)
+    frame_fps: 1.0
+
+    # Frame format: Output image format
+    # Options: jpg, png, bmp
+    # - jpg: Lossy compression (smaller files)
+    # - png: Lossless compression
+    # - bmp: Uncompressed
+    frame_format: jpg
+
+    # Frame quality
+    # - For JPEG: 2-31 (lower is better quality, 95 recommended)
+    # - For PNG: 0-9 (compression level, 9 is max)
+    frame_quality: 95
+
+    # Optional: Resize frames to maximum dimension (preserves aspect ratio)
+    # Set to null to keep original resolution
+    # Example: 1920 will resize 4K frames to 1920px max dimension
+    frame_max_dimension: null
+
+  analysis:
+    # Enable/disable specific analysis modules
+    # These require corresponding reference materials in datasets/
+    enable_speaker_recognition: false
+    enable_speech_to_text: false  # Not implemented yet
+    enable_facial_recognition: true
+
+    # Synchronization tolerance in milliseconds
+    # Events within this window are merged in the timeline
+    # Lower = tighter alignment, Higher = more lenient
+    tolerance_ms: 500.0
+
+    # Output format flags
+    export_timeline_json: true      # Machine-readable timeline
+    export_timeline_srt: true       # Subtitle format for video review
+    export_forensic_report: true    # Human-readable report

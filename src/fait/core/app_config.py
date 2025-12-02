@@ -118,6 +118,42 @@ class AudioConfig:
 
 
 @dataclass
+class VideoExtractionConfig:
+    """Video extraction configuration"""
+    # Audio extraction settings
+    audio_format: str = "wav"  # wav | mp3 | flac | m4a
+    audio_sample_rate: int = 16000
+    audio_channels: int = 1  # 1=mono, 2=stereo
+
+    # Frame extraction settings
+    frame_fps: float = 1.0  # Extract N frames per second
+    frame_format: str = "jpg"  # jpg | png | bmp
+    frame_quality: int = 95  # JPEG quality (2-31, lower is better) or PNG compression (0-9)
+    frame_max_dimension: Optional[int] = None  # Resize to max dimension (preserves aspect ratio)
+
+@dataclass
+class VideoAnalysisConfig:
+    """Video analysis pipeline configuration"""
+    # Enable/disable specific analysis modules
+    enable_speaker_recognition: bool = True
+    enable_speech_to_text: bool = False  # Not implemented yet
+    enable_facial_recognition: bool = True
+
+    # Synchronization settings
+    tolerance_ms: float = 500.0  # Temporal alignment tolerance in milliseconds
+
+    # Output formats
+    export_timeline_json: bool = True
+    export_timeline_srt: bool = True
+    export_forensic_report: bool = True
+
+@dataclass
+class VideoConfig:
+    """Video module configuration"""
+    extraction: VideoExtractionConfig = field(default_factory=VideoExtractionConfig)
+    analysis: VideoAnalysisConfig = field(default_factory=VideoAnalysisConfig)
+
+@dataclass
 class FaitConfig:
     """
     Main FAIT configuration.
@@ -127,6 +163,7 @@ class FaitConfig:
     """
     audio: AudioConfig = field(default_factory=AudioConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
+    video: VideoConfig = field(default_factory=VideoConfig)
 
     @classmethod
     def load(cls, config_path: Optional[str | Path] = None) -> "FaitConfig":
@@ -164,6 +201,10 @@ class FaitConfig:
                 object_detection=cls._parse_vision_object(data.get("vision", {}).get("object_detection", {})),
                 ocr=cls._parse_vision_ocr(data.get("vision", {}).get("ocr", {})),
                 face_recognition=cls._parse_vision_face(data.get("vision", {}).get("face_recognition", {}))
+            ),
+            video=VideoConfig(  # ADD THIS BLOCK
+                extraction=cls._parse_video_extraction(data.get("video", {}).get("extraction", {})),
+                analysis=cls._parse_video_analysis(data.get("video", {}).get("analysis", {}))
             )
         )
 
@@ -254,6 +295,32 @@ class FaitConfig:
             metric=data.get("metric", "auto"),
             thresholds=[float(t) for t in data.get("thresholds", [0.80, 0.90])],
             plot_results=bool(data.get("plot_results", True)),
+        )
+
+    @staticmethod
+    def _parse_video_extraction(data: Dict[str, Any]) -> VideoExtractionConfig:
+        """Parse video extraction config from dict"""
+        return VideoExtractionConfig(
+            audio_format=data.get("audio_format", "wav"),
+            audio_sample_rate=int(data.get("audio_sample_rate", 16000)),
+            audio_channels=int(data.get("audio_channels", 1)),
+            frame_fps=float(data.get("frame_fps", 1.0)),
+            frame_format=data.get("frame_format", "jpg"),
+            frame_quality=int(data.get("frame_quality", 95)),
+            frame_max_dimension=data.get("frame_max_dimension"),
+        )
+
+    @staticmethod
+    def _parse_video_analysis(data: Dict[str, Any]) -> VideoAnalysisConfig:
+        """Parse video analysis config from dict"""
+        return VideoAnalysisConfig(
+            enable_speaker_recognition=bool(data.get("enable_speaker_recognition", True)),
+            enable_speech_to_text=bool(data.get("enable_speech_to_text", False)),
+            enable_facial_recognition=bool(data.get("enable_facial_recognition", True)),
+            tolerance_ms=float(data.get("tolerance_ms", 500.0)),
+            export_timeline_json=bool(data.get("export_timeline_json", True)),
+            export_timeline_srt=bool(data.get("export_timeline_srt", True)),
+            export_forensic_report=bool(data.get("export_forensic_report", True)),
         )
 
 

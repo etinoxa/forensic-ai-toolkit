@@ -1,0 +1,20 @@
+# config/video/video_analysis.yaml
+# Video-specific configuration (paths set by quickstart)
+
+extraction:
+  audio_format: wav
+  audio_sample_rate: 16000
+  audio_channels: 1
+  frame_fps: 1.0
+  frame_format: jpg
+  frame_quality: 95
+  frame_max_dimension: null
+
+analysis:
+  enable_speaker_recognition: true
+  enable_speech_to_text: false
+  enable_facial_recognition: true
+  tolerance_ms: 500.0
+  export_timeline_json: true
+  export_timeline_srt: true
+  export_forensic_report: true
