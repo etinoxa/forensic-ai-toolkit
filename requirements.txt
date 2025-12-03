@@ -1,4 +1,8 @@
-
+#Ingestion
+python-magic-bin
+hachoir
+py7zr
+rarfile
 
 #Facial Fecognition
 insightface
